@@ -2,6 +2,13 @@
 
 All notable changes to Recoba Tunnel are documented in this file.
 
+## v2.1.0 — 2026-05-29
+
+### Operational Features
+
+- **Internal Health Check** — added built-in tunnel health discovery checking active services, configs, binary paths, listening ports, and log files for severe errors. Supports multi-location tunnel checking.
+- **Safe Auto-Update** — enhanced core updates with checksum verification, active binary discovery, backup generation, health check integration, and automatic rollback on failure.
+
 ## v2.0.0 — 2026-05-29
 
 ### Initial Standalone Release

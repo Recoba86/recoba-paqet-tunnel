@@ -17,6 +17,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Recoba86/recoba-tunnel/main/
 - Supports **multiple simultaneous exit tunnels** (Dubai, Switzerland, Germany, etc.)
 - Applies the **Iran Optimized Profile** (KCP MTU 1300, FEC off, window 1536, mode fast)
 - Auto-tunes interface MTU, txqueuelen, and fq flow_limit for the path
+- **Internal Health Check** — automatically discovers active service and binary paths, evaluating logs and port statuses to ensure traffic is flowing.
+- **Safe Auto-Update** — checksum-verified core updates with built-in backup and automatic rollback if the tunnel health check fails after updating.
 
 ## Architecture
 

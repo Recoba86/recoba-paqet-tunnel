@@ -95,6 +95,9 @@ output="$(
     view_current_auto_profile
     show_port_config
     create_systemd_service
+    safe_update_core
+    health_check_all_tunnels
+
     update_installer
     install_command
     download_paqet

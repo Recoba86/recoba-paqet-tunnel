@@ -17,7 +17,10 @@ echo "==> dry-run tests"
 bash scripts/test_dry_run.sh
 
 echo "==> menu smoke tests"
-bash scripts/test_menu_smoke.sh
+bash "$REPO_ROOT/scripts/test_menu_smoke.sh"
+
+echo "==> operational features tests"
+bash "$REPO_ROOT/scripts/test_operational_features.sh"
 
 echo "==> ShellCheck"
 if command -v shellcheck >/dev/null 2>&1; then

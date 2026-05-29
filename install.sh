@@ -16,7 +16,7 @@ PROJECT_NAME="Recoba Tunnel"
 INSTALLER_VERSION="2.0.0"
 GITHUB_REPO="Recoba86/recoba-tunnel"
 INSTALLER_REPO="$GITHUB_REPO"
-RELEASE_TAG="v2.0.0"
+RELEASE_TAG="v2.1.0"
 INSTALLER_CMD="/usr/local/bin/recoba-tunnel"
 
 # --- Paths ---
@@ -3094,6 +3094,362 @@ check_status() {
 # Uninstall
 #===============================================================================
 
+get_active_binary_path() {
+    local svc="$1"
+    local bin_path=""
+    bin_path=$(systemctl cat "$svc" 2>/dev/null | grep "^ExecStart=" | head -1 | sed 's/ExecStart=//' | awk '{print $1}')
+    if [ -z "$bin_path" ]; then
+        bin_path=$(systemctl show -p ExecStart "$svc" 2>/dev/null | grep -o 'path=[^;]*' | cut -d= -f2 | head -1)
+    fi
+    echo "$bin_path"
+}
+
+health_check_tunnel() {
+    local config_file="$1"
+    local name
+    name=$(get_tunnel_name "$config_file")
+    local service
+    service=$(get_tunnel_service "$config_file")
+    local role
+    role=$(grep "^role:" "$config_file" 2>/dev/null | awk '{print $2}' | tr -d '"')
+
+    local status="OK"
+    local reason=""
+    
+    local active_binary
+    active_binary=$(get_active_binary_path "$service")
+
+    if [ -z "$active_binary" ] || [ ! -x "$active_binary" ]; then
+        status="FAIL"
+        reason="binary missing"
+    elif ! systemctl is-active --quiet "$service" 2>/dev/null; then
+        status="FAIL"
+        reason="service inactive"
+    elif [ ! -f "$config_file" ]; then
+        status="FAIL"
+        reason="config missing"
+    fi
+
+    local listen_port=""
+    local server_port=""
+    if [ "$role" = "server" ]; then
+        listen_port=$(grep -A1 "^listen:" "$config_file" 2>/dev/null | grep "addr:" | awk '{print $2}' | tr -d '"' | cut -d: -f2)
+    else
+        listen_port=$(grep -oE ':[0-9]+"' "$config_file" 2>/dev/null | head -1 | tr -d ':"')
+    fi
+
+    if [ "$status" = "OK" ] && [ -n "$listen_port" ]; then
+        if [ "$role" != "server" ]; then
+            if ! ss -tuln 2>/dev/null | grep -q ":$listen_port "; then
+                status="FAIL"
+                reason="port $listen_port missing"
+            fi
+        fi
+    fi
+
+    local panic_cnt=0
+    local retry_failed_cnt=0
+    local msg_large_cnt=0
+    local conn_lost_cnt=0
+    local enobufs_cnt=0
+
+    if [ "$status" = "OK" ] || [ "$status" = "WARN" ]; then
+        local logs
+        logs=$(journalctl -u "$service" -n 100 --no-pager 2>/dev/null | grep -v "metrics initialized:" || true)
+
+        panic_cnt=$(echo "$logs" | grep -i "panic" -c || true)
+        retry_failed_cnt=$(echo "$logs" | grep -i "retry_failed" -c || true)
+        msg_large_cnt=$(echo "$logs" | grep -i "Message too large" -c || true)
+        conn_lost_cnt=$(echo "$logs" | grep -i "connection lost" -c || true)
+        enobufs_cnt=$(echo "$logs" | grep -i "ENOBUFS" -c || true)
+
+        if [ "$panic_cnt" -gt 0 ]; then
+            status="FAIL"
+            reason="panic found ($panic_cnt)"
+        elif [ "$msg_large_cnt" -gt 0 ]; then
+            status="FAIL"
+            reason="Message too large ($msg_large_cnt)"
+        elif [ "$retry_failed_cnt" -gt 0 ]; then
+            status="FAIL"
+            reason="retry_failed > 0 ($retry_failed_cnt)"
+        elif [ "$conn_lost_cnt" -gt 5 ]; then
+            status="WARN"
+            reason="high connection_lost ($conn_lost_cnt)"
+        elif [ "$conn_lost_cnt" -gt 0 ]; then
+            status="WARN"
+            reason="connection_lost ($conn_lost_cnt)"
+        elif [ "$enobufs_cnt" -gt 0 ]; then
+            status="WARN"
+            reason="ENOBUFS recovered"
+        fi
+    fi
+
+    local mem_rss=0
+    local restarts=0
+    if [ "$status" != "FAIL" ]; then
+        local pid
+        pid=$(systemctl show -p MainPID "$service" 2>/dev/null | cut -d= -f2)
+        if [ -n "$pid" ] && [ "$pid" -gt 0 ]; then
+            mem_rss=$(ps -o rss= -p "$pid" 2>/dev/null | tr -d ' ' || echo 0)
+            if [ -n "$mem_rss" ] && [ "$mem_rss" -gt 0 ]; then
+                mem_rss=$((mem_rss / 1024))
+            else
+                mem_rss=0
+            fi
+            
+            if [ "$mem_rss" -gt 150 ] && [ "$status" = "OK" ]; then
+                status="WARN"
+                reason="high memory (${mem_rss}MB)"
+            fi
+        fi
+        
+        restarts=$(systemctl show -p NRestarts "$service" 2>/dev/null | cut -d= -f2)
+        if [ -n "$restarts" ] && [ "$restarts" -gt 0 ] && [ "$status" = "OK" ]; then
+            status="WARN"
+            reason="restarts=$restarts"
+        fi
+    fi
+
+    if [ -z "$reason" ]; then
+        reason="port=$listen_port retry_failed=0 mem=${mem_rss}MB"
+    fi
+
+    if [ "$status" = "OK" ]; then
+        printf "%-15s ${GREEN}%-6s${NC} %s\n" "$name" "$status" "$reason"
+    elif [ "$status" = "WARN" ]; then
+        printf "%-15s ${YELLOW}%-6s${NC} %s\n" "$name" "$status" "$reason"
+    else
+        printf "%-15s ${RED}%-6s${NC} %s\n" "$name" "$status" "$reason"
+    fi
+}
+
+health_check_all_tunnels() {
+    print_banner
+    echo -e "${YELLOW}Health Check Report${NC}"
+    echo ""
+    local configs
+    configs=$(get_all_configs)
+    
+    if [ -z "$configs" ]; then
+        print_error "No configurations found"
+        return 1
+    fi
+    
+    while IFS= read -r config_file; do
+        health_check_tunnel "$config_file"
+    done <<< "$configs"
+    echo ""
+}
+
+health_check_menu() {
+    health_check_all_tunnels
+    echo -e "${YELLOW}Press Enter to continue...${NC}"
+    read -r < /dev/tty
+}
+
+download_recoba_core() {
+    local target_version="$1"
+    local arch
+    arch=$(detect_arch)
+    
+    local base_url="https://github.com/Recoba86/recoba-tunnel/releases/download/${target_version}"
+    local tarball="recoba-tunnel-linux-${arch}.tar.gz"
+    local checksums="SHA256SUMS"
+    
+    local temp_dir
+    temp_dir=$(mktemp -d /tmp/recoba_update.XXXXXX)
+    
+    print_step "Downloading $tarball..."
+    if ! curl -fsSL --max-time 30 "${base_url}/${tarball}" -o "${temp_dir}/${tarball}"; then
+        print_error "Failed to download core tarball"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+    
+    print_step "Downloading SHA256SUMS..."
+    if ! curl -fsSL --max-time 15 "${base_url}/${checksums}" -o "${temp_dir}/${checksums}"; then
+        print_error "Failed to download SHA256SUMS"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+    
+    print_step "Verifying checksums..."
+    if ! (
+        cd "$temp_dir" || exit 1
+        # Extract the specific line for our tarball from SHA256SUMS and verify it
+        if grep "$tarball" "$checksums" > "local_${checksums}"; then
+            if ! sha256sum -c "local_${checksums}" --status; then
+                exit 1
+            fi
+        else
+            exit 1
+        fi
+    ); then
+        print_error "Checksum verification failed! Aborting."
+        rm -rf "$temp_dir"
+        return 1
+    fi
+    print_success "Checksum verified successfully."
+    
+    print_step "Extracting binary..."
+    if ! tar -xzf "${temp_dir}/${tarball}" -C "$temp_dir" recoba-tunnel 2>/dev/null; then
+        print_error "Failed to extract tarball"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+    
+    if [ ! -x "${temp_dir}/recoba-tunnel" ]; then
+        print_error "Extracted binary not found or not executable"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+    
+    local ext_ver
+    ext_ver=$("${temp_dir}/recoba-tunnel" version 2>/dev/null | grep -i version || true)
+    if [ -n "$ext_ver" ]; then
+        print_info "Extracted: $ext_ver"
+    fi
+    
+    # Return the temp dir to the caller
+    echo "$temp_dir"
+    return 0
+}
+
+safe_update_core() {
+    print_banner
+    echo -e "${YELLOW}Safe Auto-Update: Recoba Tunnel Core${NC}"
+    echo ""
+    
+    local installed_ver
+    installed_ver=$(get_installed_paqet_version_text)
+    
+    # Discover active binary from the first tunnel service (or default legacy)
+    local configs
+    configs=$(get_all_configs)
+    local sample_service="paqet.service"
+    if [ -n "$configs" ]; then
+        local first_cfg
+        first_cfg=$(echo "$configs" | head -1)
+        sample_service=$(get_tunnel_service "$first_cfg")
+    fi
+    
+    local active_binary
+    active_binary=$(get_active_binary_path "$sample_service")
+    if [ -z "$active_binary" ] || [ ! -f "$active_binary" ]; then
+        active_binary="/opt/paqet/paqet" # fallback
+        if [ ! -f "$active_binary" ]; then
+            active_binary="/opt/recoba-tunnel/recoba-tunnel"
+        fi
+    fi
+    
+    print_info "Active binary path: ${CYAN}${active_binary}${NC}"
+    print_info "Installed version:  ${CYAN}${installed_ver}${NC}"
+    
+    print_step "Querying latest release from GitHub..."
+    local release_info
+    release_info=$(curl -s --max-time 10 "https://api.github.com/repos/Recoba86/recoba-tunnel/releases/latest" 2>/dev/null)
+    local latest_tag
+    latest_tag=$(echo "$release_info" | grep '"tag_name"' | sed -E 's/.*"v?([^"]+)".*/\1/')
+    
+    if [ -z "$latest_tag" ]; then
+        print_error "Could not fetch latest release"
+        return 1
+    fi
+    
+    # Ensure tag starts with v
+    if [[ ! "$latest_tag" == v* ]]; then
+        latest_tag="v$latest_tag"
+    fi
+    print_info "Latest release:     ${CYAN}${latest_tag}${NC}"
+    
+    # Simple check if already up to date (this handles basic vX.Y.Z matches)
+    local current_cleaned
+    current_cleaned="${installed_ver#v}"; current_cleaned=$(echo "$current_cleaned" | awk '{print $1}')
+    local latest_cleaned
+    latest_cleaned="${latest_tag#v}"
+    
+    if [ "$current_cleaned" = "$latest_cleaned" ]; then
+        print_success "Already up to date."
+        return 0
+    fi
+    
+    local do_update=false
+    read_confirm "Update core binary to ${latest_tag}?" do_update "y"
+    [ "$do_update" != true ] && return 0
+    
+    if is_dry_run; then
+        dry_run_notice "would download $latest_tag and verify SHA256SUMS"
+        dry_run_notice "would backup $active_binary"
+        dry_run_notice "would install new binary to $active_binary"
+        dry_run_notice "would restart all active tunnel services"
+        dry_run_notice "would run health check"
+        dry_run_notice "would rollback if health check fails"
+        print_success "DRY-RUN: core not updated"
+        return 0
+    fi
+    
+    local temp_dir
+    temp_dir=$(download_recoba_core "$latest_tag" | tail -1)
+    if [ ! -d "$temp_dir" ]; then
+        return 1
+    fi
+    
+    local new_binary="${temp_dir}/recoba-tunnel"
+    
+    print_step "Backing up current binary..."
+    local backup_path="${active_binary}.v${current_cleaned}.bak"
+    if ! cp "$active_binary" "$backup_path" 2>/dev/null; then
+        print_error "Failed to create backup at $backup_path"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+    print_success "Backup created: $backup_path"
+    
+    print_step "Installing new binary..."
+    if ! cp "$new_binary" "${active_binary}.tmp" 2>/dev/null || ! chmod +x "${active_binary}.tmp" || ! mv -f "${active_binary}.tmp" "$active_binary" 2>/dev/null; then
+        print_error "Failed to replace binary"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+    
+    # Keep track of updated version in metadata if applicable
+    # We do not strictly need to update CORE_VERSION because get_installed_paqet_version_text runs the binary itself.
+    
+    print_step "Restarting active services..."
+    restart_paqet_services_after_core_update
+    
+    print_step "Running health check on all tunnels..."
+    # We will capture the output and count FAILS.
+    local health_out
+    health_out=$(health_check_all_tunnels)
+    echo "$health_out"
+    
+    if echo "$health_out" | grep -q "FAIL"; then
+        print_error "Health check FAILED for one or more tunnels!"
+        print_warning "Initiating automatic rollback..."
+        
+        if cp "$backup_path" "${active_binary}.tmp" 2>/dev/null && chmod +x "${active_binary}.tmp" && mv -f "${active_binary}.tmp" "$active_binary" 2>/dev/null; then
+            print_success "Binary restored from backup."
+            restart_paqet_services_after_core_update
+            print_info "Rollback complete. System returned to ${current_cleaned}."
+        else
+            print_error "CRITICAL: Rollback failed. Manual intervention required!"
+            print_error "Backup is at: $backup_path"
+        fi
+        rm -rf "$temp_dir"
+        return 1
+    elif echo "$health_out" | grep -q "WARN"; then
+        print_warning "Update succeeded, but health check returned WARN."
+        print_warning "Review the health report above. No automatic rollback performed."
+    else
+        print_success "Update successful! All tunnels reported OK."
+    fi
+    
+    rm -rf "$temp_dir"
+    return 0
+}
+
+
 uninstall() {
     print_banner
     echo -e "${YELLOW}Uninstalling paqet...${NC}"
@@ -6096,7 +6452,7 @@ updates_menu() {
         echo ""
 
         echo -e "  ${CYAN}1)${NC} Check/Update Installer Script"
-        echo -e "  ${CYAN}2)${NC} Update paqet Core (binary)"
+        echo -e "  ${CYAN}2)${NC} Update Recoba Core (Safe, Checksum Verified)"
         echo -e "  ${CYAN}3)${NC} Core & Profile Management"
         echo -e "  ${CYAN}0)${NC} Back"
         echo ""
@@ -6104,7 +6460,7 @@ updates_menu() {
 
         case $upd_choice in
             1) check_for_updates ;;
-            2) update_paqet_core ;;
+            2) safe_update_core ;;
             3) core_management_menu ;;
             0) return 0 ;;
             *) print_error "Invalid choice" ;;
@@ -6954,6 +7310,7 @@ main() {
         echo -e "  ${CYAN}5)${NC} Edit Configuration"
         echo -e "  ${CYAN}6)${NC} Manage Tunnels (add/remove/restart)"
         echo -e "  ${CYAN}7)${NC} Test Connection"
+        echo -e "  ${CYAN}h)${NC} Internal Health Check"
         echo ""
         echo -e "  ${GREEN}── Maintenance ──${NC}"
         echo -e "  ${CYAN}8)${NC} Updates / Core / Profiles"
@@ -6981,6 +7338,7 @@ main() {
             6) manage_tunnels_menu ;;
             7) test_connection ;;
             8) updates_menu ;;
+            [Hh]) health_check_menu ;;
             [Bb]) update_paqet_core ;;
             [Aa]) auto_reset_menu ;;
             [Dd]) apply_connection_protection ;;
