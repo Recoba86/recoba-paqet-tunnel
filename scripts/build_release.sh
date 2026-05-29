@@ -15,7 +15,7 @@
 #    build/SHA256SUMS
 #===============================================================================
 
-set -e
+set -euo pipefail
 
 VERSION="${1:-v2.0.0}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -39,6 +39,9 @@ echo ""
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 
+GIT_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo unknown)
+GIT_TAG=$(git describe --tags --always 2>/dev/null || echo unknown)
+
 build_in_docker() {
     local arch="$1"
     local out_name="$2"
@@ -49,8 +52,8 @@ build_in_docker() {
             apt-get update -qq 2>/dev/null
             apt-get install -y -qq libpcap-dev 2>/dev/null
             cd /src
-            CGO_ENABLED=1 GOOS=linux GOARCH=${arch} go build -o /out/recoba-tunnel ./cmd
-        " 2>&1 | tail -3
+            CGO_ENABLED=1 GOOS=linux GOARCH=${arch} go build -trimpath -ldflags=\"-s -w -X paqet/cmd/version.Version=${VERSION} -X paqet/cmd/version.GitCommit=${GIT_COMMIT} -X paqet/cmd/version.GitTag=${GIT_TAG} -X paqet/cmd/version.BuildTime=\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" -o /out/recoba-tunnel ./cmd
+        "
 
     cd "$BUILD_DIR"
     if [ -f recoba-tunnel ]; then

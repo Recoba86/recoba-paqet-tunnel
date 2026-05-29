@@ -1984,7 +1984,8 @@ download_paqet() {
     local local_archive="$local_dir/$archive_name"
     
     # Download and extract
-    local temp_archive="/tmp/paqet.tar.gz"
+    local temp_archive
+    temp_archive=$(mktemp /tmp/paqet.XXXXXX)
     local download_success=false
     local archive_source=""
     local should_cache_archive=false
@@ -2080,8 +2081,7 @@ download_paqet() {
     if [ "$download_success" = true ]; then
         # Extract into a temp directory first (more robust to upstream archive layout changes)
         local temp_extract_dir=""
-        temp_extract_dir=$(mktemp -d /tmp/paqet-extract.XXXXXX 2>/dev/null || true)
-        [ -z "$temp_extract_dir" ] && temp_extract_dir="/tmp/paqet-extract.$$"
+        temp_extract_dir=$(mktemp -d /tmp/paqet-extract.XXXXXX)
         mkdir -p "$temp_extract_dir"
 
         tar -xzf "$temp_archive" -C "$temp_extract_dir" 2>/dev/null || {
@@ -4020,7 +4020,7 @@ edit_kcp_settings() {
     done
     
     sed_inplace "s/mode: \"[^\"]*\"/mode: \"${KCP_MODE}\"/" "$PAQET_CONFIG"
-    sed_inplace "s/conn: [0-9]*/conn: ${KCP_CONN}/" "$PAQET_CONFIG"
+    sed_inplace "s/conn: [0-9]*.*/conn: ${KCP_CONN}/" "$PAQET_CONFIG"
     
     # Update or add MTU setting (match entire value after "mtu: " to handle corrupted values)
     if grep -q "mtu:" "$PAQET_CONFIG"; then
@@ -4983,7 +4983,7 @@ upsert_transport_conn_value() {
     local conn_value="$2"
 
     if grep -Eq '^[[:space:]]*conn:[[:space:]]*[0-9]+' "$config_file"; then
-        sed_inplace "s/^[[:space:]]*conn:[[:space:]]*[0-9][0-9]*/  conn: ${conn_value}/" "$config_file"
+        sed_inplace "s/^[[:space:]]*conn:[[:space:]]*[0-9][0-9]*.*/  conn: ${conn_value}/" "$config_file"
     else
         # Accept quoted or unquoted `protocol: kcp` (users may manually edit YAML style).
         sed_inplace "/^[[:space:]]*protocol:[[:space:]]*\"\\?kcp\"\\?\\([[:space:]]*#.*\\)\\?$/a\\
@@ -6010,7 +6010,8 @@ check_for_updates() {
 update_installer() {
     print_step "Downloading latest installer..."
 
-    local temp_script="/tmp/paqet_install_new.sh"
+    local temp_script
+    temp_script=$(mktemp /tmp/paqet_install_new.XXXXXX)
     local download_url="https://raw.githubusercontent.com/${INSTALLER_REPO}/main/install.sh"
 
     if is_dry_run; then
@@ -6168,7 +6169,8 @@ install_command() {
     print_step "Installing recoba-tunnel command..."
 
     # Download latest script from GitHub
-    local temp_script="/tmp/paqet-tunnel-install.sh"
+    local temp_script
+    temp_script=$(mktemp /tmp/paqet-tunnel-install.XXXXXX)
     local download_url="https://raw.githubusercontent.com/${INSTALLER_REPO}/main/install.sh"
 
     if is_dry_run; then
@@ -6290,7 +6292,7 @@ httpd.serve_forever()
     sleep 1
     if kill -0 "$pid" 2>/dev/null; then
         print_success "Benchmark listener started successfully (PID: $pid)"
-        echo "$pid" > "/tmp/paqet-bench-helper.pid"
+        PAQET_BENCH_PID="$pid"
         return 0
     else
         print_error "Failed to start benchmark listener"
@@ -6300,11 +6302,9 @@ httpd.serve_forever()
 
 stop_local_benchmark_listener() {
     print_step "Stopping local benchmark listener..."
-    if [ -f "/tmp/paqet-bench-helper.pid" ]; then
-        local pid
-        pid=$(cat "/tmp/paqet-bench-helper.pid")
-        kill "$pid" 2>/dev/null || true
-        rm -f "/tmp/paqet-bench-helper.pid"
+    if [ -n "${PAQET_BENCH_PID:-}" ]; then
+        kill "$PAQET_BENCH_PID" 2>/dev/null || true
+        PAQET_BENCH_PID=""
     fi
     pkill -f "socketserver.TCPServer.*H" || true
     print_success "Benchmark listener stopped"
@@ -6846,7 +6846,9 @@ migrate_old_paqet_install() {
         local service_file="/etc/systemd/system/${new_service}.service"
         if [ ! -f "$service_file" ]; then
             local desc="${PROJECT_NAME} - Tunnel: ${name}"
-            cat > "/tmp/${new_service}.service" << EOF
+            local temp_svc
+            temp_svc=$(mktemp "/tmp/${new_service}.XXXXXX")
+            cat > "$temp_svc" << EOF
 [Unit]
 Description=${desc}
 After=network.target
@@ -6862,7 +6864,7 @@ StandardError=journal
 [Install]
 WantedBy=multi-user.target
 EOF
-            if mv "/tmp/${new_service}.service" "$service_file" 2>/dev/null; then
+            if mv "$temp_svc" "$service_file" 2>/dev/null; then
                 systemctl daemon-reload 2>/dev/null || true
                 print_success "Created service: $new_service"
             else
