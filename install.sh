@@ -3129,6 +3129,67 @@ parse_timestamp_to_epoch() {
     return 1
 }
 
+extract_listen_ports_from_config() {
+    local config_file="$1"
+    local raw_lines
+    local valid_ports=()
+    local port_hash=""
+    
+    raw_lines=$(grep -E "^[[:space:]]*-?[[:space:]]*listen:[[:space:]]*" "$config_file" 2>/dev/null || true)
+    
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        local val="${line%%#*}"
+        val="${val#*listen:}"
+        val=$(echo "$val" | tr -d '"' | tr -d "'" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+        [ -z "$val" ] && continue
+        
+        local port=""
+        if [[ "$val" =~ ^([0-9]+)$ ]]; then
+            port="${BASH_REMATCH[1]}"
+        elif [[ "$val" =~ :([0-9]+)$ ]]; then
+            port="${BASH_REMATCH[1]}"
+        fi
+        
+        if [ -n "$port" ] && [ "$port" -ge 1 ] 2>/dev/null && [ "$port" -le 65535 ] 2>/dev/null; then
+            if ! echo "$port_hash" | grep -qw "$port"; then
+                valid_ports+=("$port")
+                port_hash="$port_hash $port"
+            fi
+        fi
+    done <<< "$raw_lines"
+    
+    if [ ${#valid_ports[@]} -eq 0 ]; then
+        local role
+        role=$(grep "^role:" "$config_file" 2>/dev/null | awk '{print $2}' | tr -d '"')
+        if [ "$role" = "server" ]; then
+            local fallback_line
+            fallback_line=$(grep -A1 "^[[:space:]]*listen:[[:space:]]*$" "$config_file" 2>/dev/null | grep "addr:" | head -1)
+            if [ -n "$fallback_line" ]; then
+                local fval="${fallback_line%%#*}"
+                fval="${fval#*addr:}"
+                fval=$(echo "$fval" | tr -d '"' | tr -d "'" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+                if [[ "$fval" =~ :([0-9]+)$ ]]; then
+                    local p="${BASH_REMATCH[1]}"
+                    if [ -n "$p" ] && [ "$p" -ge 1 ] 2>/dev/null && [ "$p" -le 65535 ] 2>/dev/null; then
+                        valid_ports+=("$p")
+                    fi
+                fi
+            fi
+        fi
+    fi
+    
+    if [ ${#valid_ports[@]} -eq 0 ]; then
+        echo "unknown"
+    else
+        local out=""
+        for p in "${valid_ports[@]}"; do
+            if [ -z "$out" ]; then out="$p"; else out="$out,$p"; fi
+        done
+        echo "$out"
+    fi
+}
+
 health_check_tunnel() {
     local config_file="$1"
     local name
@@ -3156,18 +3217,30 @@ health_check_tunnel() {
     fi
 
     local listen_port=""
-    local server_port=""
-    if [ "$role" = "server" ]; then
-        listen_port=$(grep -A1 "^listen:" "$config_file" 2>/dev/null | grep "addr:" | awk '{print $2}' | tr -d '"' | cut -d: -f2)
-    else
-        listen_port=$(grep -oE ':[0-9]+"' "$config_file" 2>/dev/null | head -1 | tr -d ':"')
-    fi
+    listen_port=$(extract_listen_ports_from_config "$config_file")
 
-    if [ "$status" = "OK" ] && [ -n "$listen_port" ]; then
+    local partial_missing_reason=""
+    if [ "$status" = "OK" ] && [ "$listen_port" != "unknown" ]; then
         if [ "$role" != "server" ]; then
-            if ! ss -tuln 2>/dev/null | grep -q ":$listen_port "; then
+            local total_count=0
+            local missing_count=0
+            local missing_ports=""
+            local IFS_old="$IFS"
+            IFS=','
+            for p in $listen_port; do
+                total_count=$((total_count + 1))
+                if ! ss -tuln 2>/dev/null | grep -q ":$p "; then
+                    missing_count=$((missing_count + 1))
+                    if [ -z "$missing_ports" ]; then missing_ports="$p"; else missing_ports="$missing_ports,$p"; fi
+                fi
+            done
+            IFS="$IFS_old"
+            
+            if [ "$missing_count" -eq "$total_count" ] && [ "$total_count" -gt 0 ]; then
                 status="FAIL"
-                reason="port $listen_port missing"
+                reason="listen ports not bound: $missing_ports"
+            elif [ "$missing_count" -gt 0 ]; then
+                partial_missing_reason="missing=$missing_ports"
             fi
         fi
     fi
@@ -3295,7 +3368,14 @@ health_check_tunnel() {
         fi
     fi
 
-    if [ -z "$reason" ]; then
+    if [ -n "$partial_missing_reason" ] && [ "$status" != "FAIL" ]; then
+        status="WARN"
+        if [ -z "$reason" ]; then
+            reason="port=$listen_port $partial_missing_reason retry_failed=0 mem=${mem_rss}MB"
+        else
+            reason="port=$listen_port $partial_missing_reason, $reason"
+        fi
+    elif [ -z "$reason" ]; then
         reason="port=$listen_port retry_failed=0 mem=${mem_rss}MB"
     fi
 

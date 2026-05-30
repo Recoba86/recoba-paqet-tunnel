@@ -452,4 +452,104 @@ out=$(health_check_tunnel "ok.yaml")
 assert_contains "$out" "OK" "v2.1.2: timestamp mismatch does NOT generate WARN"
 assert_contains "$out" "[boot]" "v2.1.2: timestamp mismatch triggers fallback to boot"
 
+
+
+# ---------------------------------------------------------
+# Test: v2.1.3 Robust Port Extraction
+# ---------------------------------------------------------
+
+
+
+test_port() {
+    local name="$1"
+    local content="$2"
+    local expected="$3"
+    echo "$content" > /tmp/mock_config.yaml
+    local result
+    result=$(extract_listen_ports_from_config /tmp/mock_config.yaml)
+    assert_eq "$expected" "$result" "v2.1.3 port test: $name"
+}
+
+test_port "1. single forward listen -> 1090" 'role: "client"
+forward:
+  - listen: "0.0.0.0:1090"' "1090"
+
+test_port "2. multiple forwards -> 1090,1091,1092" 'role: "client"
+forward:
+  - listen: "0.0.0.0:1090"
+  - listen: "127.0.0.1:1091"
+  - listen: ":1092"' "1090,1091,1092"
+
+test_port "3. 0.0.0.0:1090 -> 1090" 'role: "client"
+listen: "0.0.0.0:1090"' "1090"
+
+test_port "4. 127.0.0.1:1090 -> 1090" 'role: "client"
+listen: "127.0.0.1:1090"' "1090"
+
+test_port "5. :1090 -> 1090" 'role: "client"
+listen: ":1090"' "1090"
+
+test_port "6. 1090 -> 1090" 'role: "client"
+listen: 1090' "1090"
+
+test_port "7. quoted + inline comment -> 1090" 'role: "client"
+listen: "0.0.0.0:1090" # comment' "1090"
+
+test_port "8. invalid listen: abc1090xyz -> ignored" 'role: "client"
+listen: "abc1090xyz"' "unknown"
+
+test_port "9. invalid port 70000 -> ignored" 'role: "client"
+listen: 70000' "unknown"
+
+test_port "10. duplicate ports -> deduped" 'role: "client"
+forward:
+  - listen: ":1090"
+  - listen: ":1090"
+  - listen: 1091' "1090,1091"
+
+test_port "11. server top-level listen -> 9999" 'role: "server"
+listen: ":9999"' "9999"
+
+test_port "12. server nested listen -> 9999" 'role: "server"
+server:
+  listen: ":9999"' "9999"
+
+test_port "13. missing listen -> unknown" 'role: "client"' "unknown"
+
+# Test 14: health output never contains blank port=
+echo 'role: "client"' > /tmp/mock_config.yaml
+out=$(health_check_tunnel "/tmp/mock_config.yaml")
+if echo "$out" | grep -q "port= "; then
+    echo "FAIL: health output contains blank port="
+    exit 1
+fi
+assert_contains "$out" "port=unknown" "v2.1.3: health output should be port=unknown, not blank"
+
+# Test 15: partial port missing -> WARN
+echo 'role: "client"
+forward:
+  - listen: 1090
+  - listen: 1091' > /tmp/mock_config.yaml
+# shellcheck disable=SC2329
+ss() {
+    echo "LISTEN 0 128 0.0.0.0:1090 0.0.0.0:*" # 1090 is bound, 1091 is missing
+}
+export -f ss
+out=$(health_check_tunnel "/tmp/mock_config.yaml")
+assert_contains "$out" "WARN" "v2.1.3: partial port missing returns WARN"
+assert_contains "$out" "missing=1091" "v2.1.3: partial port missing reason mentions 1091"
+
+# Test 16: all ports missing -> FAIL
+# shellcheck disable=SC2329
+ss() {
+    echo "" # nothing bound
+}
+export -f ss
+out=$(health_check_tunnel "/tmp/mock_config.yaml")
+assert_contains "$out" "FAIL" "v2.1.3: all ports missing returns FAIL"
+assert_contains "$out" "listen ports not bound: 1090,1091" "v2.1.3: all ports missing lists all missing ports"
+
+# Reset ss mock
+unset -f ss
+
 printf 'All operational features tests passed (%s assertions).\n' "$pass_count"
