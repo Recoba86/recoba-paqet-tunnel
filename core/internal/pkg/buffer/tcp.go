@@ -11,9 +11,9 @@ import (
 )
 
 var (
-	tcpWriteRetries    int32 = 8
-	tcpWriteRetryUS    int32 = 200
-	tcpWriteRetryMaxUS int32 = 25000
+	tcpWriteRetries    int32 = 12
+	tcpWriteRetryUS    int32 = 500
+	tcpWriteRetryMaxUS int32 = 100000
 )
 
 var (

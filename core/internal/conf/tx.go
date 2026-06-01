@@ -37,13 +37,13 @@ func (t *TX) setDefaults() {
 	}
 
 	if t.TCPWriteRetries == 0 {
-		t.TCPWriteRetries = 8
+		t.TCPWriteRetries = 12
 	}
 	if t.TCPWriteRetryUS == 0 {
-		t.TCPWriteRetryUS = 200
+		t.TCPWriteRetryUS = 500
 	}
 	if t.TCPWriteRetryMaxUS == 0 {
-		t.TCPWriteRetryMaxUS = 25000
+		t.TCPWriteRetryMaxUS = 100000
 	}
 }
 
