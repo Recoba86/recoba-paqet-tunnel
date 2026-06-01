@@ -39,8 +39,27 @@ echo ""
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 
-GIT_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo unknown)
-GIT_TAG=$(git describe --tags --always 2>/dev/null || echo unknown)
+# Preflight checks
+if ! git diff --quiet || ! git diff --cached --quiet; then
+    echo "ERROR: working tree is dirty. Commit or stash changes before building release assets."
+    exit 1
+fi
+
+if ! git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
+    echo "ERROR: tag $VERSION does not exist locally. Create tag before building release assets."
+    exit 1
+fi
+
+if [ "$(git rev-parse HEAD)" != "$(git rev-parse "$VERSION")" ]; then
+    echo "ERROR: tag $VERSION does not point to HEAD."
+    exit 1
+fi
+
+GIT_COMMIT=$(git rev-parse HEAD)
+GIT_TAG="$VERSION"
+
+echo "GitTag: $GIT_TAG"
+echo "GitCommit: $GIT_COMMIT"
 
 build_in_docker() {
     local arch="$1"
