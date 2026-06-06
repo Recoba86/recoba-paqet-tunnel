@@ -1,5 +1,19 @@
 # Changelog
 
+## [v2.1.10] - 2026-06-06
+
+### ⚠️ BREAKING CHANGE ⚠️
+**Protocol Change**: The internal TCP stream serialization has been switched from `gob` to length-prefixed `json` to fix handshake deadlocks under heavy packet loss and strict Kernel conditions. 
+**This version is NOT backward compatible with older versions.** Both server and client must be upgraded to v2.1.10 simultaneously.
+
+### Added
+- **Connection Protection**: Idempotent `iptables` rules (NOTRACK and RST DROP) are now automatically managed by the installer for both client and server nodes to prevent kernel RST leakage and Deep Packet Inspection (DPI) drops.
+- **Diagnostics**: Added 'Verify connection protection' and 'Reapply connection protection' options to the installer's diagnostic menu.
+
+### Changed
+- **TCP Handshake Evasion**: Default `local_flag` is now `["S", "A", "PA"]` and `remote_flag` is `["SA", "PA"]`. This properly simulates a 3-way TCP handshake to maintain NAT mappings and evade connection timeouts in strict environments.
+# Changelog
+
 All notable changes to Recoba Paqet Tunnel are documented in this file.
 
 ## v2.1.9 — 2026-06-06

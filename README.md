@@ -1,5 +1,6 @@
 # Recoba Paqet Tunnel
 
+> ⚠️ **v2.1.10 Breaking Change:** The tunnel protocol changed from `gob` to `json` for improved stability. v2.1.10 is NOT backward compatible with older versions. Both server and client must be updated simultaneously.
 Raw packet tunnel installer and manager for Server A entry nodes and abroad exit servers, with Recoba-enhanced Paqet core builds focused on production tunnel stability.
 
 This project is based on the open-source [Paqet](https://github.com/hanselime/paqet) core and has been independently modified for ENOBUFS recovery, split metrics, TCP write retry backoff, health checks, and safe core updates.

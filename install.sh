@@ -7913,6 +7913,8 @@ update_selected_service_core() {
 core_update_menu() {
     while true; do
         print_banner
+        echo -e "${RED}⚠️  WARNING: v2.1.10 introduces a backward-incompatible protocol change (Gob -> JSON).${NC}"
+        echo -e "${RED}Both server and client endpoints MUST be updated simultaneously to prevent tunnel failure.${NC}"
         echo -e "${YELLOW}Core Update${NC}"
         echo ""
         show_core_management_status
