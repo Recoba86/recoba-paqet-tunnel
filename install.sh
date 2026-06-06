@@ -6594,7 +6594,14 @@ show_core_management_status() {
             meta_binary_sha=$(get_installed_core_meta_field "CORE_BINARY_SHA256")
             meta_archive_sha=$(get_installed_core_meta_field "CORE_ARCHIVE_SHA256")
             [ -n "$meta_source" ] && echo -e "  ${YELLOW}Archive Source:${NC} ${CYAN}${meta_source}${NC}"
-            [ -n "$meta_archive" ] && echo -e "  ${YELLOW}Archive Path:${NC}   ${CYAN}${meta_archive}${NC}"
+            # Only show Archive Path if the file actually exists on disk (suppress stale cache entries)
+            if [ -n "$meta_archive" ]; then
+                if [ -f "$meta_archive" ]; then
+                    echo -e "  ${YELLOW}Archive Path:${NC}   ${CYAN}${meta_archive}${NC}"
+                else
+                    echo -e "  ${YELLOW}Archive Path:${NC}   ${CYAN}none/not cached${NC}"
+                fi
+            fi
             [ -n "$meta_archive_sha" ] && echo -e "  ${YELLOW}Archive SHA256:${NC} ${CYAN}${meta_archive_sha}${NC}"
             [ -n "$meta_binary_sha" ] && echo -e "  ${YELLOW}Binary SHA256:${NC}  ${CYAN}${meta_binary_sha}${NC}"
         fi
@@ -8559,17 +8566,37 @@ handle_cli_args() {
 
 main() {
     check_root
-    
-    # Auto-sync: if recoba-paqet-tunnel command exists but is outdated, update it silently
-    if is_command_installed; then
-        local installed_ver
-        installed_ver=$(grep '^INSTALLER_VERSION=' "$INSTALLER_CMD" 2>/dev/null | cut -d'"' -f2)
-        if [ -n "$installed_ver" ] && [ "$installed_ver" != "$INSTALLER_VERSION" ]; then
-            local running_script="${BASH_SOURCE[0]}"
-            if [ -f "$running_script" ]; then
-                cp "$running_script" "$INSTALLER_CMD"
-                chmod +x "$INSTALLER_CMD"
+
+    # Auto-update: if the installed command is stale, download the latest from GitHub and re-exec.
+    # This ensures the banner/version is always current regardless of when the command was first installed.
+    local _self_script="${BASH_SOURCE[0]}"
+    local _installer_url="https://raw.githubusercontent.com/${INSTALLER_REPO}/main/install.sh"
+
+    # Only attempt auto-update when running as the installed command (not piped from curl)
+    if [ -f "$INSTALLER_CMD" ] && [ "$_self_script" = "$INSTALLER_CMD" ]; then
+        local _remote_ver
+        _remote_ver=$(curl -fsSL --max-time 5 "$_installer_url" 2>/dev/null | grep '^INSTALLER_VERSION=' | cut -d'"' -f2 || true)
+        local _local_ver
+        _local_ver=$(grep '^INSTALLER_VERSION=' "$INSTALLER_CMD" 2>/dev/null | cut -d'"' -f2 || echo "")
+        if [ -n "$_remote_ver" ] && [ "$_remote_ver" != "$_local_ver" ]; then
+            local _tmp_update
+            _tmp_update=$(mktemp /tmp/recoba-installer-update.XXXXXX)
+            if curl -fsSL --max-time 30 "$_installer_url" -o "$_tmp_update" 2>/dev/null; then
+                chmod +x "$_tmp_update"
+                cp "$_tmp_update" "$INSTALLER_CMD"
+                rm -f "$_tmp_update"
+                echo -e "${CYAN}[i] Installer updated to v${_remote_ver}. Restarting...${NC}"
+                exec "$INSTALLER_CMD" "$@"
             fi
+            rm -f "$_tmp_update" 2>/dev/null || true
+        fi
+    elif is_command_installed && [ -f "$_self_script" ] && [ "$_self_script" != "$INSTALLER_CMD" ]; then
+        # Running a freshly-downloaded/piped script: sync it to the installed command location
+        local _installed_ver
+        _installed_ver=$(grep '^INSTALLER_VERSION=' "$INSTALLER_CMD" 2>/dev/null | cut -d'"' -f2 || echo "")
+        if [ -n "$_installed_ver" ] && [ "$_installed_ver" != "$INSTALLER_VERSION" ]; then
+            cp "$_self_script" "$INSTALLER_CMD"
+            chmod +x "$INSTALLER_CMD"
         fi
     fi
     
