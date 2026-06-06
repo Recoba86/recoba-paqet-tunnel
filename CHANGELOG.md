@@ -2,6 +2,16 @@
 
 All notable changes to Recoba Paqet Tunnel are documented in this file.
 
+## v2.1.7 — 2026-06-06
+
+### Legacy Import and Diagnostics
+
+- Fixed manager version display so the installer banner reports `v2.1.7`.
+- Added legacy discovery for `/opt/paqet/config*.yaml`, `/opt/paqet/paqet`, and `paqet*.service` units.
+- Updated status, diagnostics, and health checks to show legacy and new tunnels before migration.
+- Updated safe core updates to parse each active service `ExecStart`, replace the binary it actually uses, back it up, and restart only the owning service.
+- Added safer port-conflict handling that identifies known Paqet tunnel owners before setup proceeds.
+
 ## v2.1.6 — 2026-06-06
 
 ### Release Assets

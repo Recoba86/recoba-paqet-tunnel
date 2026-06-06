@@ -13,16 +13,20 @@ set -e
 
 # --- Project Identity ---
 PROJECT_NAME="Recoba Paqet Tunnel"
-INSTALLER_VERSION="2.0.0"
+INSTALLER_VERSION="2.1.7"
 GITHUB_REPO="Recoba86/recoba-paqet-tunnel"
 INSTALLER_REPO="$GITHUB_REPO"
-RELEASE_TAG="v2.1.6"
+RELEASE_TAG="v2.1.7"
 INSTALLER_CMD="/usr/local/bin/recoba-paqet-tunnel"
 
 # --- Paths ---
 PAQET_DIR="/opt/recoba-paqet-tunnel"
 PAQET_CONFIG="$PAQET_DIR/config.yaml"
 PAQET_BIN="$PAQET_DIR/recoba-paqet-tunnel"
+PAQET_COMPAT_BIN="$PAQET_DIR/paqet"
+LEGACY_PAQET_DIR="/opt/paqet"
+LEGACY_PAQET_BIN="$LEGACY_PAQET_DIR/paqet"
+SYSTEMD_SYSTEM_DIR="${SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
 PAQET_SERVICE="recoba-paqet-tunnel"
 AUTO_RESET_CONF="$PAQET_DIR/auto-reset.conf"
 AUTO_RESET_SCRIPT="$PAQET_DIR/auto-reset.sh"
@@ -1399,6 +1403,225 @@ read_optional() {
 # Multi-Tunnel Helper Functions
 #===============================================================================
 
+service_unit_name() {
+    local service="$1"
+    service=$(basename "$service")
+    service="${service%.service}"
+    echo "$service"
+}
+
+is_paqet_service_name() {
+    local service
+    service=$(service_unit_name "$1")
+    case "$service" in
+        paqet|paqet-*|recoba-paqet-tunnel|recoba-paqet-tunnel-*) ;;
+        *) return 1 ;;
+    esac
+    case "$service" in
+        *auto-reset*|*.timer) return 1 ;;
+    esac
+    return 0
+}
+
+discover_paqet_services() {
+    local seen=""
+    local unit=""
+    local service=""
+
+    if [ -d "$SYSTEMD_SYSTEM_DIR" ]; then
+        while IFS= read -r unit; do
+            [ -z "$unit" ] && continue
+            service=$(service_unit_name "$unit")
+            is_paqet_service_name "$service" || continue
+            if ! echo "$seen" | grep -Fxq "$service"; then
+                echo "$service"
+                seen="${seen}
+${service}"
+            fi
+        done < <(find "$SYSTEMD_SYSTEM_DIR" -maxdepth 1 \( -name 'paqet*.service' -o -name 'recoba-paqet-tunnel*.service' \) \( -type f -o -type l \) 2>/dev/null | sort)
+    fi
+
+    if command -v systemctl >/dev/null 2>&1; then
+        while IFS= read -r service; do
+            [ -z "$service" ] && continue
+            service=$(service_unit_name "$service")
+            is_paqet_service_name "$service" || continue
+            if ! echo "$seen" | grep -Fxq "$service"; then
+                echo "$service"
+                seen="${seen}
+${service}"
+            fi
+        done < <(systemctl list-unit-files 'paqet*.service' 'recoba-paqet-tunnel*.service' --no-legend --no-pager 2>/dev/null | awk '{print $1}' | sort)
+    fi
+}
+
+get_service_unit_text() {
+    local service
+    service=$(service_unit_name "$1")
+    local unit_file="$SYSTEMD_SYSTEM_DIR/${service}.service"
+
+    if [ -f "$unit_file" ] || [ -L "$unit_file" ]; then
+        cat "$unit_file" 2>/dev/null
+        return 0
+    fi
+
+    systemctl cat "$service" 2>/dev/null || systemctl cat "${service}.service" 2>/dev/null || true
+}
+
+get_service_exec_start() {
+    local service
+    service=$(service_unit_name "$1")
+    local exec_line=""
+
+    exec_line=$(get_service_unit_text "$service" | grep '^ExecStart=' | head -1 | sed 's/^ExecStart=//')
+    if [ -z "$exec_line" ]; then
+        exec_line=$(systemctl show -p ExecStart "$service" 2>/dev/null | grep -o 'argv\[\]=[^;]*' | sed 's/^argv\[\]=//' | head -1)
+    fi
+    if [ -z "$exec_line" ]; then
+        exec_line=$(systemctl show -p ExecStart "$service" 2>/dev/null | grep -o 'path=[^;]*' | cut -d= -f2 | head -1)
+    fi
+
+    echo "$exec_line"
+}
+
+extract_binary_path_from_exec() {
+    local exec_line="$1"
+    local token=""
+    [ -z "$exec_line" ] && return 0
+
+    # shellcheck disable=SC2086
+    set -- $exec_line
+    while [ "$#" -gt 0 ]; do
+        token="$1"
+        token="${token#-}"
+        case "$token" in
+            env|/usr/bin/env) shift; continue ;;
+            *=*) shift; continue ;;
+        esac
+        echo "$token"
+        return 0
+    done
+}
+
+extract_config_path_from_exec() {
+    local exec_line="$1"
+    local prev=""
+    local token=""
+    [ -z "$exec_line" ] && return 0
+
+    # shellcheck disable=SC2086
+    for token in $exec_line; do
+        token="${token%\"}"
+        token="${token#\"}"
+        if [ "$prev" = "-c" ] || [ "$prev" = "--config" ]; then
+            echo "$token"
+            return 0
+        fi
+        case "$token" in
+            -c=*|--config=*) echo "${token#*=}"; return 0 ;;
+            *.yaml|*.yml) echo "$token"; return 0 ;;
+        esac
+        prev="$token"
+    done
+}
+
+get_service_config_path() {
+    local service="$1"
+    extract_config_path_from_exec "$(get_service_exec_start "$service")"
+}
+
+get_service_binary_path() {
+    local service="$1"
+    extract_binary_path_from_exec "$(get_service_exec_start "$service")"
+}
+
+discover_paqet_config_paths() {
+    local seen=""
+    local dir=""
+    local cfg=""
+    local service=""
+
+    for dir in "$LEGACY_PAQET_DIR" "$PAQET_DIR"; do
+        [ -d "$dir" ] || continue
+        while IFS= read -r cfg; do
+            [ -f "$cfg" ] || continue
+            if ! echo "$seen" | grep -Fxq "$cfg"; then
+                echo "$cfg"
+                seen="${seen}
+${cfg}"
+            fi
+        done < <(find "$dir" -maxdepth 1 -type f -name 'config*.yaml' 2>/dev/null | sort)
+    done
+
+    while IFS= read -r service; do
+        [ -z "$service" ] && continue
+        cfg=$(get_service_config_path "$service")
+        [ -n "$cfg" ] && [ -f "$cfg" ] || continue
+        if ! echo "$seen" | grep -Fxq "$cfg"; then
+            echo "$cfg"
+            seen="${seen}
+${cfg}"
+        fi
+    done < <(discover_paqet_services)
+}
+
+discover_paqet_binary_paths() {
+    local seen=""
+    local bin=""
+    local service=""
+    local candidate=""
+
+    while IFS= read -r service; do
+        [ -z "$service" ] && continue
+        bin=$(get_service_binary_path "$service")
+        [ -n "$bin" ] && [ -f "$bin" ] || continue
+        if ! echo "$seen" | grep -Fxq "$bin"; then
+            echo "$bin"
+            seen="${seen}
+${bin}"
+        fi
+    done < <(discover_paqet_services)
+
+    for candidate in "$PAQET_BIN" "$PAQET_COMPAT_BIN" "$LEGACY_PAQET_BIN"; do
+        [ -f "$candidate" ] || continue
+        if ! echo "$seen" | grep -Fxq "$candidate"; then
+            echo "$candidate"
+            seen="${seen}
+${candidate}"
+        fi
+    done
+}
+
+get_primary_paqet_binary_path() {
+    local service=""
+    local bin=""
+
+    while IFS= read -r service; do
+        [ -z "$service" ] && continue
+        if systemctl is-active --quiet "$service" 2>/dev/null; then
+            bin=$(get_service_binary_path "$service")
+            [ -n "$bin" ] && [ -x "$bin" ] && { echo "$bin"; return 0; }
+        fi
+    done < <(discover_paqet_services)
+
+    discover_paqet_binary_paths | head -1
+}
+
+describe_config_role() {
+    local config_file="$1"
+    grep "^role:" "$config_file" 2>/dev/null | awk '{print $2}' | tr -d '"' | head -1
+}
+
+config_server_addr() {
+    local config_file="$1"
+    grep -A1 "^server:" "$config_file" 2>/dev/null | grep "addr:" | awk '{print $2}' | tr -d '"' | head -1
+}
+
+config_listen_ports_csv() {
+    local config_file="$1"
+    extract_listen_ports_from_config "$config_file" 2>/dev/null | sed 's/unknown//'
+}
+
 is_valid_tunnel_name() {
     local value="$1"
     local name_regex='^[a-z0-9][a-z0-9-]*$'
@@ -1437,7 +1660,7 @@ read_tunnel_name() {
         elif ! is_valid_tunnel_name "$value"; then
             print_error "Invalid name. Use lowercase letters, numbers, and hyphens only."
             echo ""
-        elif [ -f "$PAQET_DIR/config-${value}.yaml" ]; then
+        elif discover_paqet_config_paths | grep -Eq "/config-${value}\.yaml$"; then
             print_error "Tunnel '$value' already exists. Choose a different name."
             echo ""
         else
@@ -1449,31 +1672,17 @@ read_tunnel_name() {
 
 # Get list of all tunnel config files (legacy + named)
 get_tunnel_configs() {
-    # Legacy config first
-    if [ -f "$PAQET_DIR/config.yaml" ]; then
-        local role
-        role=$(grep "^role:" "$PAQET_DIR/config.yaml" 2>/dev/null | awk '{print $2}' | tr -d '"')
-        # Only include legacy if it's a client config (Server A)
-        # Server B configs are single-instance and don't need tunnel management
-        if [ "$role" = "client" ]; then
-            echo "$PAQET_DIR/config.yaml"
-        fi
-    fi
-    # Named tunnel configs
-    for f in "$PAQET_DIR"/config-*.yaml; do
-        [ -f "$f" ] && echo "$f"
-    done
+    local cfg=""
+    while IFS= read -r cfg; do
+        [ -z "$cfg" ] && continue
+        [ "$(describe_config_role "$cfg")" = "client" ] && echo "$cfg"
+    done < <(discover_paqet_config_paths)
     return 0
 }
 
 # Get ALL config files including server configs (for status/uninstall)
 get_all_configs() {
-    if [ -f "$PAQET_DIR/config.yaml" ]; then
-        echo "$PAQET_DIR/config.yaml"
-    fi
-    for f in "$PAQET_DIR"/config-*.yaml; do
-        [ -f "$f" ] && echo "$f"
-    done
+    discover_paqet_config_paths
     return 0
 }
 
@@ -1493,12 +1702,34 @@ get_tunnel_name() {
 # Get service name for a tunnel
 get_tunnel_service() {
     local config_path="$1"
+    local service=""
+    local svc_cfg=""
+
+    while IFS= read -r service; do
+        [ -z "$service" ] && continue
+        svc_cfg=$(get_service_config_path "$service")
+        if [ "$svc_cfg" = "$config_path" ]; then
+            echo "$service"
+            return 0
+        fi
+    done < <(discover_paqet_services)
+
     local name
     name=$(get_tunnel_name "$config_path")
     if [ "$name" = "default" ]; then
-        echo "paqet"
+        if [ "$config_path" = "$PAQET_DIR/config.yaml" ] && systemctl cat recoba-paqet-tunnel >/dev/null 2>&1; then
+            echo "recoba-paqet-tunnel"
+        else
+            echo "paqet"
+        fi
     else
-        echo "paqet-${name}"
+        if systemctl cat "paqet-${name}" >/dev/null 2>&1; then
+            echo "paqet-${name}"
+        elif systemctl cat "recoba-paqet-tunnel-${name}" >/dev/null 2>&1; then
+            echo "recoba-paqet-tunnel-${name}"
+        else
+            echo "paqet-${name}"
+        fi
     fi
 }
 
@@ -1531,7 +1762,7 @@ list_tunnels() {
         local service
         service=$(get_tunnel_service "$config_file")
         local role
-        role=$(grep "^role:" "$config_file" 2>/dev/null | awk '{print $2}' | tr -d '"')
+        role=$(describe_config_role "$config_file")
         
         # Get status
         local status="${RED}Stopped${NC}"
@@ -1705,33 +1936,89 @@ get_gateway_mac() {
     fi
 }
 
+find_paqet_port_owner() {
+    local port="$1"
+    local proto="${2:-tcp}"
+    local cfg=""
+    local service=""
+    local role=""
+    local port_list=""
+    local binary=""
+
+    while IFS= read -r cfg; do
+        [ -z "$cfg" ] && continue
+        role=$(describe_config_role "$cfg")
+        port_list=$(extract_listen_ports_from_config "$cfg" 2>/dev/null || true)
+        echo ",$port_list," | grep -q ",$port," || continue
+        service=$(get_tunnel_service "$cfg")
+        binary=$(get_service_binary_path "$service")
+        printf '%s|%s|%s|%s|%s\n' "$service" "$cfg" "$binary" "$role" "$port_list"
+        return 0
+    done < <(get_all_configs)
+
+    return 1
+}
+
+handle_known_paqet_port_conflict() {
+    local port="$1"
+    local proto="${2:-tcp}"
+    local owner="$3"
+    local service config binary role ports
+    IFS='|' read -r service config binary role ports <<< "$owner"
+
+    print_warning "Port $port/$proto is already owned by a known paqet tunnel."
+    echo -e "  Service: ${CYAN}${service}${NC}"
+    echo -e "  Config:  ${CYAN}${config}${NC}"
+    [ -n "$binary" ] && echo -e "  Binary:  ${CYAN}${binary}${NC}"
+    echo -e "  Role:    ${CYAN}${role:-unknown}${NC}"
+    echo -e "  Ports:   ${CYAN}${ports:-unknown}${NC}"
+    echo ""
+    echo -e "${YELLOW}Choose how to proceed:${NC}"
+    echo -e "  ${CYAN}1)${NC} Keep existing tunnel unchanged and cancel this setup"
+    echo -e "  ${CYAN}2)${NC} Import/manage existing tunnel visibility, then cancel this setup"
+    echo -e "  ${CYAN}3)${NC} Replace/reconfigure existing tunnel after explicit confirmation"
+    echo -e "  ${CYAN}4)${NC} Choose another port (cancel this setup and rerun with a different port)"
+    echo ""
+    read -r -p "Choice [1]: " conflict_choice < /dev/tty
+    conflict_choice="${conflict_choice:-1}"
+
+    case "$conflict_choice" in
+        1)
+            print_info "Existing tunnel left unchanged."
+            return 1
+            ;;
+        2)
+            print_info "Existing tunnel is already visible to this manager through service/config discovery."
+            print_info "Use Check Status or Diagnostics to manage it without copying files."
+            return 1
+            ;;
+        3)
+            local replace_confirm=false
+            print_warning "This will stop only ${service}. Its config file is not deleted."
+            read_confirm "Stop ${service} so the requested port can be reused?" replace_confirm "n"
+            if [ "$replace_confirm" = true ]; then
+                systemctl_or_dry_run stop "$service" 2>/dev/null || true
+                systemctl_or_dry_run disable "$service" 2>/dev/null || true
+                print_warning "Stopped existing service: $service"
+                return 0
+            fi
+            print_info "Replace cancelled. Existing tunnel left unchanged."
+            return 1
+            ;;
+        4)
+            print_info "Choose a different port and run setup again."
+            return 1
+            ;;
+        *)
+            print_error "Invalid choice. Existing tunnel left unchanged."
+            return 1
+            ;;
+    esac
+}
+
 check_port_conflict() {
     local port=$1
-    local pid=""
-    
-    if ss -tuln | grep -q ":${port} "; then
-        print_warning "Port $port is already in use!"
-        
-        pid=$(lsof -t -i:"$port" 2>/dev/null | head -1)
-        if [ -n "$pid" ]; then
-            local pname
-            pname=$(ps -p "$pid" -o comm= 2>/dev/null)
-            echo -e "  Process: ${CYAN}$pname${NC} (PID: $pid)"
-            echo ""
-            echo -e "${YELLOW}Kill this process? (y/n)${NC}"
-            read -r -p "> " kill_choice < /dev/tty
-            
-            if [[ "$kill_choice" =~ ^[Yy]$ ]]; then
-                kill -9 "$pid" 2>/dev/null || true
-                sleep 1
-                pkill -9 -f ".*:${port}" 2>/dev/null || true
-                print_success "Process killed"
-            else
-                print_error "Cannot continue with port in use. Please free the port or choose another."
-                return 1
-            fi
-        fi
-    fi
+    check_port_conflict_proto "$port" "tcp"
 }
 
 check_port_conflict_proto() {
@@ -1740,8 +2027,15 @@ check_port_conflict_proto() {
 
     local ss_args="-tln"
     [ "$proto" = "udp" ] && ss_args="-uln"
-
+    
     if ss "$ss_args" 2>/dev/null | grep -q ":${port} "; then
+        local owner=""
+        owner=$(find_paqet_port_owner "$port" "$proto" || true)
+        if [ -n "$owner" ]; then
+            handle_known_paqet_port_conflict "$port" "$proto" "$owner"
+            return $?
+        fi
+
         print_warning "Port $port/$proto is already in use!"
         local pid=""
         pid=$(lsof -t -i"${proto}":"$port" 2>/dev/null | head -1)
@@ -3060,15 +3354,20 @@ check_status() {
         role=$(grep "^role:" "$config_file" 2>/dev/null | awk '{print $2}' | tr -d '"')
         
         echo -e "${YELLOW}── Tunnel: ${CYAN}${name}${YELLOW} (${role}) ──${NC}"
+        echo -e "  Service: ${CYAN}${service}${NC}"
+        echo -e "  Config:  ${CYAN}${config_file}${NC}"
+        local bin_path
+        bin_path=$(get_service_binary_path "$service")
+        [ -n "$bin_path" ] && echo -e "  Binary:  ${CYAN}${bin_path}${NC}"
         
         # Service status
         if systemctl is-active --quiet "$service" 2>/dev/null; then
-            echo -e "  Service: ${GREEN}● Running${NC}"
+            echo -e "  State:   ${GREEN}● Running${NC}"
             local uptime
             uptime=$(systemctl show "$service" --property=ActiveEnterTimestamp 2>/dev/null | cut -d'=' -f2)
             [ -n "$uptime" ] && echo -e "  Started: ${CYAN}$uptime${NC}"
         else
-            echo -e "  Service: ${RED}● Stopped${NC}"
+            echo -e "  State:   ${RED}● Stopped${NC}"
         fi
         
         # Details
@@ -3112,7 +3411,7 @@ check_status() {
 get_active_binary_path() {
     local svc="$1"
     local bin_path=""
-    bin_path=$(systemctl cat "$svc" 2>/dev/null | grep "^ExecStart=" | head -1 | sed 's/ExecStart=//' | awk '{print $1}')
+    bin_path=$(get_service_binary_path "$svc")
     if [ -z "$bin_path" ]; then
         bin_path=$(systemctl show -p ExecStart "$svc" 2>/dev/null | grep -o 'path=[^;]*' | cut -d= -f2 | head -1)
     fi
@@ -3513,34 +3812,149 @@ download_recoba_core() {
     return 0
 }
 
+discover_active_paqet_service_rows() {
+    local service=""
+    local binary=""
+    local config=""
+    local emitted=0
+    while IFS= read -r service; do
+        [ -z "$service" ] && continue
+        systemctl is-active --quiet "$service" 2>/dev/null || continue
+        binary=$(get_service_binary_path "$service")
+        [ -n "$binary" ] && [ -f "$binary" ] || continue
+        config=$(get_service_config_path "$service")
+        printf '%s|%s|%s\n' "$service" "$binary" "$config"
+        emitted=1
+    done < <(discover_paqet_services)
+
+    [ "$emitted" -eq 1 ] && return 0
+
+    while IFS= read -r config; do
+        [ -z "$config" ] && continue
+        service=$(get_tunnel_service "$config")
+        [ -n "$service" ] || continue
+        systemctl is-active --quiet "$service" 2>/dev/null || continue
+        binary=$(get_service_binary_path "$service")
+        [ -n "$binary" ] && [ -f "$binary" ] || continue
+        printf '%s|%s|%s\n' "$service" "$binary" "$config"
+    done < <(get_all_configs)
+}
+
+active_update_binary_targets() {
+    local rows="$1"
+    local seen=""
+    local row service binary config
+    while IFS= read -r row; do
+        [ -z "$row" ] && continue
+        IFS='|' read -r service binary config <<< "$row"
+        [ -n "$binary" ] || continue
+        if ! echo "$seen" | grep -Fxq "$binary"; then
+            echo "$binary"
+            seen="${seen}
+${binary}"
+        fi
+    done <<< "$rows"
+}
+
+restart_services_for_binary() {
+    local rows="$1"
+    local target_binary="$2"
+    local row service binary config
+    while IFS= read -r row; do
+        [ -z "$row" ] && continue
+        IFS='|' read -r service binary config <<< "$row"
+        [ "$binary" = "$target_binary" ] || continue
+        if systemctl restart "$service" >/dev/null 2>&1; then
+            print_success "Restarted $service"
+        else
+            print_warning "Failed to restart $service (check: journalctl -u $service -n 50)"
+        fi
+    done <<< "$rows"
+}
+
+install_core_for_active_services() {
+    local new_binary="$1"
+    local old_ver="$2"
+    local latest_tag="$3"
+    local rows="$4"
+    local targets=""
+    local target=""
+    local timestamp=""
+    local backups=""
+
+    targets=$(active_update_binary_targets "$rows")
+    if [ -z "$targets" ]; then
+        print_error "No active paqet services with detectable binary paths were found."
+        return 1
+    fi
+
+    timestamp=$(date +%Y-%m-%d-%H%M%S 2>/dev/null || date +%Y%m%d%H%M%S)
+
+    while IFS= read -r target; do
+        [ -z "$target" ] && continue
+        local backup_path="${target}.from-${old_ver}.to-${latest_tag}.${timestamp}.bak"
+        print_step "Backing up $target..."
+        if ! cp "$target" "$backup_path" 2>/dev/null; then
+            print_error "Failed to create backup at $backup_path"
+            return 1
+        fi
+        chmod 755 "$backup_path" 2>/dev/null || chmod +x "$backup_path" 2>/dev/null || true
+        backups="${backups}
+${target}|${backup_path}"
+        print_success "Backup created: $backup_path"
+
+        print_step "Installing new binary to $target..."
+        if ! cp "$new_binary" "${target}.tmp" 2>/dev/null || ! chmod +x "${target}.tmp" || ! mv -f "${target}.tmp" "$target" 2>/dev/null; then
+            print_error "Failed to replace binary: $target"
+            rollback_updated_binaries "$backups"
+            return 1
+        fi
+    done <<< "$targets"
+
+    UPDATED_CORE_BACKUPS="$backups"
+
+    while IFS= read -r target; do
+        [ -z "$target" ] && continue
+        restart_services_for_binary "$rows" "$target"
+    done <<< "$targets"
+}
+
+rollback_updated_binaries() {
+    local backups="$1"
+    local row target backup
+    while IFS= read -r row; do
+        [ -z "$row" ] && continue
+        IFS='|' read -r target backup <<< "$row"
+        [ -n "$target" ] && [ -f "$backup" ] || continue
+        if cp "$backup" "${target}.tmp" 2>/dev/null && chmod +x "${target}.tmp" && mv -f "${target}.tmp" "$target" 2>/dev/null; then
+            print_success "Restored binary from backup: $target"
+        else
+            print_error "CRITICAL: rollback failed for $target"
+            print_error "Backup is at: $backup"
+        fi
+    done <<< "$backups"
+}
+
 safe_update_core() {
     print_banner
     echo -e "${YELLOW}Safe Auto-Update: Recoba Paqet Tunnel Core${NC}"
     echo ""
     
+    local rows
+    rows=$(discover_active_paqet_service_rows)
+    if [ -z "$rows" ]; then
+        print_error "No active paqet services were found."
+        print_info "Use Diagnostics to inspect installed services and configs."
+        return 1
+    fi
+
     local installed_ver
     installed_ver=$(get_installed_paqet_version_text)
-    
-    # Discover active binary from the first tunnel service (or default legacy)
-    local configs
-    configs=$(get_all_configs)
-    local sample_service="paqet.service"
-    if [ -n "$configs" ]; then
-        local first_cfg
-        first_cfg=$(echo "$configs" | head -1)
-        sample_service=$(get_tunnel_service "$first_cfg")
-    fi
-    
-    local active_binary
-    active_binary=$(get_active_binary_path "$sample_service")
-    if [ -z "$active_binary" ] || [ ! -f "$active_binary" ]; then
-        active_binary="/opt/paqet/paqet" # fallback
-        if [ ! -f "$active_binary" ]; then
-            active_binary="/opt/recoba-paqet-tunnel/recoba-paqet-tunnel"
-        fi
-    fi
-    
-    print_info "Active binary path: ${CYAN}${active_binary}${NC}"
+
+    print_info "Active update targets:"
+    echo "$rows" | while IFS='|' read -r svc bin cfg; do
+        echo -e "  ${CYAN}${svc}${NC} -> ${YELLOW}${bin}${NC} (${cfg:-config unknown})"
+    done
     print_info "Installed version:  ${CYAN}${installed_ver}${NC}"
     
     print_step "Querying latest release from GitHub..."
@@ -3577,9 +3991,8 @@ safe_update_core() {
     
     if is_dry_run; then
         dry_run_notice "would download $latest_tag and verify SHA256SUMS"
-        dry_run_notice "would backup $active_binary"
-        dry_run_notice "would install new binary to $active_binary"
-        dry_run_notice "would restart all active tunnel services"
+        dry_run_notice "would backup and replace each active service ExecStart binary"
+        dry_run_notice "would restart only services using each updated binary"
         dry_run_notice "would run health check"
         dry_run_notice "would rollback if health check fails"
         print_success "DRY-RUN: core not updated"
@@ -3593,30 +4006,12 @@ safe_update_core() {
     fi
     
     local new_binary="${temp_dir}/recoba-paqet-tunnel"
-    
-    print_step "Backing up current binary..."
-    local timestamp
-    timestamp=$(date +%Y-%m-%d-%H%M%S 2>/dev/null || date +%Y%m%d%H%M%S)
-    local backup_path="${active_binary}.from-${old_ver}.to-${latest_tag}.${timestamp}.bak"
-    if ! cp "$active_binary" "$backup_path" 2>/dev/null; then
-        print_error "Failed to create backup at $backup_path"
+
+    UPDATED_CORE_BACKUPS=""
+    if ! install_core_for_active_services "$new_binary" "$old_ver" "$latest_tag" "$rows"; then
         rm -rf "$temp_dir"
         return 1
     fi
-    print_success "Backup created: $backup_path"
-    
-    print_step "Installing new binary..."
-    if ! cp "$new_binary" "${active_binary}.tmp" 2>/dev/null || ! chmod +x "${active_binary}.tmp" || ! mv -f "${active_binary}.tmp" "$active_binary" 2>/dev/null; then
-        print_error "Failed to replace binary"
-        rm -rf "$temp_dir"
-        return 1
-    fi
-    
-    # Keep track of updated version in metadata if applicable
-    # We do not strictly need to update CORE_VERSION because get_installed_paqet_version_text runs the binary itself.
-    
-    print_step "Restarting active services..."
-    restart_paqet_services_after_core_update
     
     print_step "Running health check on all tunnels..."
     # We will capture the output and count FAILS.
@@ -3627,15 +4022,11 @@ safe_update_core() {
     if echo "$health_out" | grep -q "FAIL"; then
         print_error "Health check FAILED for one or more tunnels!"
         print_warning "Initiating automatic rollback..."
-        
-        if cp "$backup_path" "${active_binary}.tmp" 2>/dev/null && chmod +x "${active_binary}.tmp" && mv -f "${active_binary}.tmp" "$active_binary" 2>/dev/null; then
-            print_success "Binary restored from backup."
-            restart_paqet_services_after_core_update
-            print_info "Rollback complete. System returned to ${old_ver}."
-        else
-            print_error "CRITICAL: Rollback failed. Manual intervention required!"
-            print_error "Backup is at: $backup_path"
-        fi
+        rollback_updated_binaries "$UPDATED_CORE_BACKUPS"
+        echo "$rows" | cut -d'|' -f2 | sort -u | while IFS= read -r restored_bin; do
+            [ -n "$restored_bin" ] && restart_services_for_binary "$rows" "$restored_bin"
+        done
+        print_info "Rollback complete. System returned to ${old_ver} where backups restored successfully."
         rm -rf "$temp_dir"
         return 1
     elif echo "$health_out" | grep -q "WARN"; then
@@ -6372,15 +6763,17 @@ get_latest_paqet_release_tag() {
 }
 
 get_installed_paqet_version_text() {
-    if [ ! -x "$PAQET_BIN" ]; then
+    local bin_path=""
+    bin_path=$(get_primary_paqet_binary_path)
+    if [ -z "$bin_path" ] || [ ! -x "$bin_path" ]; then
         echo "not installed"
         return 0
     fi
 
     local out=""
-    out=$("$PAQET_BIN" version 2>/dev/null | head -1) || true
-    [ -z "$out" ] && out=$("$PAQET_BIN" --version 2>/dev/null | head -1) || true
-    [ -z "$out" ] && out=$("$PAQET_BIN" -v 2>/dev/null | head -1) || true
+    out=$("$bin_path" version 2>/dev/null | head -1) || true
+    [ -z "$out" ] && out=$("$bin_path" --version 2>/dev/null | head -1) || true
+    [ -z "$out" ] && out=$("$bin_path" -v 2>/dev/null | head -1) || true
 
     if [ -n "$out" ]; then
         echo "$out"
@@ -6435,35 +6828,20 @@ extract_recoba_version_from_text() {
 restart_paqet_services_after_core_update() {
     print_step "Restarting paqet services..."
 
-    local configs
-    configs=$(get_all_configs)
     local restarted=0
     local failed=0
+    local service=""
 
-    if [ -n "$configs" ]; then
-        while IFS= read -r config_file; do
-            [ -z "$config_file" ] && continue
-            local service
-            service=$(get_tunnel_service "$config_file")
-            if systemctl cat "$service" >/dev/null 2>&1; then
-                if systemctl restart "$service" >/dev/null 2>&1; then
-                    print_success "Restarted $service"
-                    restarted=$((restarted + 1))
-                else
-                    print_warning "Failed to restart $service (check: journalctl -u $service -n 50)"
-                    failed=$((failed + 1))
-                fi
-            fi
-        done <<< "$configs"
-    elif systemctl cat paqet >/dev/null 2>&1; then
-        if systemctl restart paqet >/dev/null 2>&1; then
-            print_success "Restarted paqet"
-            restarted=1
+    while IFS= read -r service; do
+        [ -z "$service" ] && continue
+        if systemctl restart "$service" >/dev/null 2>&1; then
+            print_success "Restarted $service"
+            restarted=$((restarted + 1))
         else
-            print_warning "Failed to restart paqet (check: journalctl -u paqet -n 50)"
-            failed=1
+            print_warning "Failed to restart $service (check: journalctl -u $service -n 50)"
+            failed=$((failed + 1))
         fi
-    fi
+    done < <(discover_paqet_services)
 
     if [ "$restarted" -eq 0 ] && [ "$failed" -eq 0 ]; then
         print_info "No installed paqet services detected to restart"
@@ -6471,75 +6849,7 @@ restart_paqet_services_after_core_update() {
 }
 
 update_paqet_core() {
-    print_banner
-    echo -e "${YELLOW}Update paqet Core Binary${NC}"
-    echo ""
-
-    local provider
-    provider=$(get_current_core_provider)
-    print_info "Core provider: ${CYAN}$(get_core_provider_label "$provider")${NC}"
-
-    local installed_ver
-    local raw_ver
-    raw_ver=$(get_installed_paqet_version_text)
-    installed_ver=$(extract_recoba_version_from_text "$raw_ver")
-    print_info "Installed core: ${CYAN}${installed_ver}${NC}"
-
-    local latest_tag
-    latest_tag=$(get_latest_paqet_release_tag_for_provider "$provider")
-    if [ -n "$latest_tag" ]; then
-        print_info "Latest provider release/tag: ${CYAN}${latest_tag}${NC}"
-    else
-        print_warning "Could not fetch latest release tag (network may be restricted)"
-    fi
-    local installed_meta_provider=""
-    local installed_meta_version=""
-    installed_meta_provider=$(get_installed_core_meta_field "CORE_PROVIDER")
-    installed_meta_version=$(get_installed_core_meta_field "CORE_VERSION")
-    if [ -n "$latest_tag" ] && [ "$installed_meta_provider" = "$provider" ] && [ "$installed_meta_version" = "$latest_tag" ]; then
-        print_success "Installed core already matches the latest provider release/tag (${latest_tag})."
-        print_info "No download needed. Cached core archives remain available for future switches/rollbacks."
-        return 0
-    fi
-    print_warning "Core updates may require updating the peer server too if protocol compatibility changes."
-    echo ""
-
-    local do_core_update=false
-    read_confirm "Download latest core for current provider and restart services?" do_core_update "y"
-    [ "$do_core_update" != true ] && return 0
-
-    mkdir -p "$PAQET_DIR"
-
-    local backup_bin=""
-    if [ -f "$PAQET_BIN" ]; then
-        backup_bin=$(create_paqet_core_backup "update-${provider}") || {
-            print_error "Failed to create core backup"
-            return 1
-        }
-        print_info "Backup created: $backup_bin"
-    fi
-
-    local old_version_setting="$PAQET_VERSION"
-    PAQET_VERSION="latest"
-
-    if download_paqet; then
-        PAQET_VERSION="$old_version_setting"
-        restart_paqet_services_after_core_update
-        print_success "paqet core update completed"
-    else
-        PAQET_VERSION="$old_version_setting"
-        print_error "paqet core update failed"
-        if [ -n "$backup_bin" ] && [ -f "$backup_bin" ]; then
-            local tmp_restore="${PAQET_BIN}.restorefail.$$"
-            if cp "$backup_bin" "$tmp_restore" 2>/dev/null && chmod +x "$tmp_restore" 2>/dev/null && mv -f "$tmp_restore" "$PAQET_BIN" 2>/dev/null; then
-                print_warning "Restored previous paqet binary from backup"
-            else
-                rm -f "$tmp_restore" 2>/dev/null || true
-                print_warning "Failed to restore previous paqet binary automatically (manual restore may be required)"
-            fi
-        fi
-        return 1
-    fi
+    safe_update_core
 }
 
 check_for_updates() {
@@ -7344,6 +7654,112 @@ benchmark_menu() {
 # Migration from old Paqet Manager (/opt/paqet → /opt/recoba-paqet-tunnel)
 #===============================================================================
 
+binary_version_text() {
+    local binary="$1"
+    local out=""
+    [ -x "$binary" ] || { echo "not executable"; return 0; }
+    out=$("$binary" version 2>/dev/null | head -1) || true
+    [ -z "$out" ] && out=$("$binary" --version 2>/dev/null | head -1) || true
+    [ -z "$out" ] && out=$("$binary" -v 2>/dev/null | head -1) || true
+    echo "${out:-version unavailable}"
+}
+
+show_existing_installation_scan() {
+    local service=""
+    local exec_start=""
+    local cfg=""
+    local bin=""
+    local role=""
+    local ports=""
+    local server=""
+    local state=""
+    local found=0
+
+    echo -e "${YELLOW}Discovered paqet services:${NC}"
+    while IFS= read -r service; do
+        [ -z "$service" ] && continue
+        found=1
+        exec_start=$(get_service_exec_start "$service")
+        cfg=$(get_service_config_path "$service")
+        bin=$(get_service_binary_path "$service")
+        role=""
+        ports=""
+        server=""
+        if [ -n "$cfg" ] && [ -f "$cfg" ]; then
+            role=$(describe_config_role "$cfg")
+            ports=$(extract_listen_ports_from_config "$cfg" 2>/dev/null || true)
+            server=$(config_server_addr "$cfg")
+        fi
+        if systemctl is-active --quiet "$service" 2>/dev/null; then
+            state="running"
+        else
+            state="inactive"
+        fi
+        echo ""
+        echo -e "  ${CYAN}${service}${NC} (${state})"
+        echo -e "    ExecStart: ${YELLOW}${exec_start:-unknown}${NC}"
+        echo -e "    Config:    ${YELLOW}${cfg:-unknown}${NC}"
+        echo -e "    Binary:    ${YELLOW}${bin:-unknown}${NC}"
+        echo -e "    Role:      ${YELLOW}${role:-unknown}${NC}"
+        echo -e "    Ports:     ${YELLOW}${ports:-unknown}${NC}"
+        [ -n "$server" ] && echo -e "    Server:    ${YELLOW}${server}${NC}"
+    done < <(discover_paqet_services)
+    [ "$found" -eq 0 ] && echo "  None"
+    echo ""
+
+    echo -e "${YELLOW}Discovered config paths:${NC}"
+    local any_cfg=0
+    while IFS= read -r cfg; do
+        [ -z "$cfg" ] && continue
+        any_cfg=1
+        echo -e "  ${CYAN}${cfg}${NC}"
+    done < <(discover_paqet_config_paths)
+    [ "$any_cfg" -eq 0 ] && echo "  None"
+    echo ""
+
+    echo -e "${YELLOW}Discovered binary paths:${NC}"
+    local any_bin=0
+    while IFS= read -r bin; do
+        [ -z "$bin" ] && continue
+        any_bin=1
+        echo -e "  ${CYAN}${bin}${NC} - $(binary_version_text "$bin")"
+    done < <(discover_paqet_binary_paths)
+    [ "$any_bin" -eq 0 ] && echo "  None"
+}
+
+diagnostics_menu() {
+    print_banner
+    echo -e "${YELLOW}Safe Diagnostics${NC}"
+    echo ""
+    show_existing_installation_scan
+    echo ""
+    echo -e "${YELLOW}Listening ports commonly used by paqet:${NC}"
+    if command -v ss >/dev/null 2>&1; then
+        ss -tulpen 2>/dev/null | grep -E ':(1090|1091|1092|1093|8888|9998|9999)\b' || echo "  None found on common ports"
+    else
+        print_warning "ss command not available"
+    fi
+}
+
+import_existing_installation_menu() {
+    print_banner
+    echo -e "${YELLOW}Import Existing paqet Installation${NC}"
+    echo ""
+    print_info "Legacy and new services are visible in status without copying or stopping anything."
+    print_info "Import/migration is optional and preserves backups."
+    echo ""
+    show_existing_installation_scan
+    echo ""
+
+    local do_migrate=false
+    read_confirm "Copy legacy /opt/paqet configs into ${PAQET_DIR} and create new service units?" do_migrate "n"
+    if [ "$do_migrate" = true ]; then
+        migrate_old_paqet_install
+    else
+        print_info "No files changed. Existing services remain externally managed but visible."
+    fi
+}
+
 migrate_old_paqet_install() {
     local old_dir="/opt/paqet"
     local old_configs=""
@@ -7560,7 +7976,8 @@ main() {
         echo -e "  ${CYAN}a)${NC} Automatic Reset (scheduled restart)"
         echo -e "  ${CYAN}d)${NC} Connection Protection & MTU Tuning (fix fake RST/disconnects)"
         echo -e "  ${CYAN}f)${NC} IPTables Port Forwarding (relay/NAT)"
-        echo -e "  ${CYAN}m)${NC} Migrate from old /opt/paqet (Paqet Manager → Recoba Paqet Tunnel)"
+        echo -e "  ${CYAN}m)${NC} Import existing installation / migrate old /opt/paqet"
+        echo -e "  ${CYAN}x)${NC} Safe Diagnostics (services, ports, binaries, configs)"
         echo -e "  ${CYAN}u)${NC} Uninstall"
         echo ""
         echo -e "  ${GREEN}── Script ──${NC}"
@@ -7588,7 +8005,8 @@ main() {
             [Ff]) iptables_port_forwarding_menu ;;
             [Uu]) uninstall ;;
             [Ii]) install_command ;;
-            [Mm]) migrate_old_paqet_install ;;
+            [Mm]) import_existing_installation_menu ;;
+            [Xx]) diagnostics_menu ;;
             [Rr]) uninstall_command ;;
             0) exit 0 ;;
             *) print_error "Invalid choice" ;;

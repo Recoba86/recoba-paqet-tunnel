@@ -7,8 +7,8 @@ This project is based on the open-source [Paqet](https://github.com/hanselime/pa
 ## Repository and Version
 
 - GitHub: https://github.com/Recoba86/recoba-paqet-tunnel
-- Latest local tag: `v2.1.6`
-- Default installer release tag: `v2.1.6`
+- Latest local tag: `v2.1.7`
+- Default installer release tag: `v2.1.7`
 
 ## One-Click Install
 
@@ -35,6 +35,16 @@ The installer can run both roles from the same script. Use one Server A with mul
 6. Ensure the server firewall allows the chosen Paqet listen port.
 
 Do not commit generated secrets, private keys, or machine-specific configs. Keep those under `.local/` or directly on the server.
+
+## Legacy Install Detection
+
+The manager detects existing Paqet installs before migration:
+
+- Services: `paqet.service`, `paqet-dubai.service`, `paqet-germany.service`, and other `paqet-*.service` units.
+- Configs: `/opt/paqet/config*.yaml` and `/opt/recoba-paqet-tunnel/config*.yaml`.
+- Binaries: `/opt/paqet/paqet`, `/opt/recoba-paqet-tunnel/paqet`, and `/opt/recoba-paqet-tunnel/recoba-paqet-tunnel`.
+
+`Check Status` and `Safe Diagnostics` show legacy tunnels even when they remain externally managed. `Update/Reinstall Core` parses each active systemd `ExecStart`, backs up the binary actually used by that service, replaces that binary, and restarts only the affected service.
 
 ## Install Server A
 
@@ -126,17 +136,17 @@ Use the installer for production configs whenever possible because it validates 
 If you have an existing install at `/opt/paqet/`, run:
 
 ```text
-recoba-paqet-tunnel -> m) Migrate from old /opt/paqet
+recoba-paqet-tunnel -> m) Import existing installation / migrate old /opt/paqet
 ```
 
-The migration copies configs, creates Recoba Paqet Tunnel service units, and installs the enhanced core without deleting the old setup.
+The import screen is read-only by default. Optional migration copies configs, creates Recoba Paqet Tunnel service units, and installs the enhanced core without deleting the old setup.
 
 ## Build Release Assets
 
 Release assets are built from clean, tagged commits:
 
 ```bash
-bash scripts/build_release.sh v2.1.6
+bash scripts/build_release.sh v2.1.7
 ```
 
 The script builds canonical `recoba-paqet-tunnel-linux-amd64.tar.gz` and `recoba-paqet-tunnel-linux-arm64.tar.gz` tarballs plus `SHA256SUMS` under `build/`. The installer can still fall back to older `recoba-tunnel-linux-*.tar.gz` release assets when needed.

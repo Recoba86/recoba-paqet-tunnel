@@ -188,4 +188,88 @@ assert_contains "$(cat "$config_opt")" "    dshard: 0" "iran-optimized profile F
 assert_contains "$(cat "$config_opt")" "    pshard: 0" "iran-optimized profile FEC off (pshard=0)"
 assert_contains "$(cat "$config_opt")" "  conn: 2" "iran-optimized profile conn=2"
 
+# Legacy installation discovery and service-aware updates.
+legacy_root="$tmp_dir/legacy-paqet"
+new_root="$tmp_dir/recoba-paqet"
+SYSTEMD_SYSTEM_DIR="$tmp_dir/systemd"
+LEGACY_PAQET_DIR="$legacy_root"
+LEGACY_PAQET_BIN="$legacy_root/paqet"
+PAQET_DIR="$new_root"
+PAQET_BIN="$new_root/recoba-paqet-tunnel"
+PAQET_COMPAT_BIN="$new_root/paqet"
+mkdir -p "$LEGACY_PAQET_DIR" "$PAQET_DIR" "$SYSTEMD_SYSTEM_DIR"
+
+cat > "$LEGACY_PAQET_DIR/config-dubai.yaml" <<'YAML'
+role: "client"
+forward:
+  - listen: "0.0.0.0:1090"
+    target: "127.0.0.1:1090"
+    protocol: "tcp"
+server:
+  addr: "203.0.113.10:9998"
+transport:
+  protocol: "kcp"
+  kcp:
+    key: "test-key"
+YAML
+
+cat > "$SYSTEMD_SYSTEM_DIR/paqet-dubai.service" <<EOF
+[Unit]
+Description=legacy paqet dubai
+
+[Service]
+ExecStart=$LEGACY_PAQET_BIN run -c $LEGACY_PAQET_DIR/config-dubai.yaml
+EOF
+
+cat > "$LEGACY_PAQET_BIN" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "version" ]; then
+    echo "Version: v2.1.5"
+fi
+EOF
+chmod +x "$LEGACY_PAQET_BIN"
+
+systemctl() {
+    case "${1:-}" in
+        cat)
+            cat "$SYSTEMD_SYSTEM_DIR/${2%.service}.service"
+            ;;
+        is-active)
+            [ "${2:-}" = "--quiet" ] && [ "${3:-}" = "paqet-dubai" ]
+            ;;
+        restart)
+            echo "$2" >> "$tmp_dir/restarted-services.log"
+            ;;
+        show|list-unit-files)
+            return 1
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+journalctl() { return 0; }
+ss() { return 0; }
+
+assert_contains "$(get_all_configs)" "$LEGACY_PAQET_DIR/config-dubai.yaml" "legacy /opt/paqet config detected"
+assert_eq "paqet-dubai" "$(get_tunnel_service "$LEGACY_PAQET_DIR/config-dubai.yaml")" "legacy paqet-dubai service matched by ExecStart"
+status_out="$(check_status 2>/dev/null || true)"
+assert_contains "$status_out" "paqet-dubai" "status shows paqet-dubai.service"
+assert_contains "$status_out" "$LEGACY_PAQET_DIR/config-dubai.yaml" "status shows legacy config path"
+owner_out="$(find_paqet_port_owner "1090" "tcp")"
+assert_contains "$owner_out" "paqet-dubai" "port 1090 owner detected as paqet-dubai"
+assert_contains "$owner_out" "$LEGACY_PAQET_DIR/config-dubai.yaml" "port 1090 owner reports config"
+
+new_core="$tmp_dir/new-recoba-core"
+cat > "$new_core" <<'EOF'
+#!/usr/bin/env bash
+echo new-core
+EOF
+chmod +x "$new_core"
+rows="paqet-dubai|$LEGACY_PAQET_BIN|$LEGACY_PAQET_DIR/config-dubai.yaml"
+install_core_for_active_services "$new_core" "v2.1.5" "v2.1.7" "$rows"
+assert_contains "$(cat "$LEGACY_PAQET_BIN")" "new-core" "update-core replaces legacy /opt/paqet/paqet when service uses it"
+assert_contains "$(cat "$tmp_dir/restarted-services.log")" "paqet-dubai" "update-core restarts only the owning service"
+
 printf 'All pure logic tests passed (%s assertions).\n' "$pass_count"
