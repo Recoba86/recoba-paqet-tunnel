@@ -6826,15 +6826,42 @@ restart_all_detected_services() {
 
 migrate_tcp_flags_to_nat_safe() {
     print_banner
-    echo -e "${YELLOW}Migrate Tunnel Configs to NAT-safe TCP Flags (v2.1.10+)${NC}"
+    echo -e "${YELLOW}Migrate Tunnel Configs — TCP Flag Profiles${NC}"
     echo ""
-    echo -e "${CYAN}This migrates existing configs from old flags (e.g. [\"PA\"])${NC}"
-    echo -e "${CYAN}to the correct handshake-simulating flags:${NC}"
-    echo -e "  Client: local_flag: [\"S\", \"A\", \"PA\"]  remote_flag: [\"SA\", \"PA\"]"
-    echo -e "  Server: local_flag: [\"SA\", \"PA\"]"
+    echo -e "${CYAN}Choose a TCP flag profile for your tunnel configs:${NC}"
+    echo ""
+    echo -e "  ${GREEN}1)${NC} ${BOLD}PA-only Performance${NC}  — fastest, production-verified stable"
+    echo -e "      Client: local_flag: [\"PA\"]  remote_flag: [\"PA\"]"
+    echo -e "      Server: local_flag: [\"PA\"]"
+    echo ""
+    echo -e "  ${YELLOW}2)${NC} ${BOLD}NAT-safe Handshake${NC}  — handshake-simulating, more compatible"
+    echo -e "      Client: local_flag: [\"S\", \"A\", \"PA\"]  remote_flag: [\"SA\", \"PA\"]"
+    echo -e "      Server: local_flag: [\"SA\", \"PA\"]"
     echo ""
     echo -e "${YELLOW}A timestamped backup of each config will be created before changes.${NC}"
     echo ""
+
+    local profile_choice=""
+    read -r -p "Profile [1=PA-only Performance, 2=NAT-safe Handshake]: " profile_choice < /dev/tty
+    profile_choice="${profile_choice:-1}"
+
+    local client_lf client_rf server_lf
+    case "$profile_choice" in
+        1)
+            client_lf='["PA"]'
+            client_rf='["PA"]'
+            server_lf='["PA"]'
+            ;;
+        2)
+            client_lf='["S", "A", "PA"]'
+            client_rf='["SA", "PA"]'
+            server_lf='["SA", "PA"]'
+            ;;
+        *)
+            print_error "Invalid choice: $profile_choice"
+            return 1
+            ;;
+    esac
 
     local do_migrate=false
     read_confirm "Proceed with migration?" do_migrate "y"
@@ -6896,14 +6923,13 @@ migrate_tcp_flags_to_nat_safe() {
         cur_rf=$(grep -E '^ *remote_flag:' "$p" 2>/dev/null | head -1 || echo "")
         echo -e "  Current: local_flag=${YELLOW}${cur_lf}${NC}  remote_flag=${YELLOW}${cur_rf:-<none>}${NC}"
 
-        # Determine target flags
         local target_lf target_rf
         if [ "$role" = "server" ]; then
-            target_lf='["SA", "PA"]'
+            target_lf="$server_lf"
             target_rf=""
         else
-            target_lf='["S", "A", "PA"]'
-            target_rf='["SA", "PA"]'
+            target_lf="$client_lf"
+            target_rf="$client_rf"
         fi
 
         # Check if already correct
@@ -6988,7 +7014,7 @@ core_management_menu() {
         echo -e "  ${CYAN}6)${NC} View Active KCP Profile Preview (read-only)"
         echo -e "  ${CYAN}7)${NC} Show Effective Port/Profile Defaults"
         echo -e "  ${CYAN}8)${NC} Show Installed Core Metadata"
-        echo -e "  ${CYAN}9)${NC} Migrate configs to NAT-safe TCP flags (v2.1.10+)"
+        echo -e "  ${CYAN}9)${NC} Migrate configs: TCP flag profiles (PA-only / NAT-safe)"
         echo -e "  ${CYAN}b)${NC} Core Benchmarking"
         echo -e "  ${CYAN}0)${NC} Back"
         echo ""
