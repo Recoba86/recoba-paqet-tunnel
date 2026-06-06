@@ -2932,7 +2932,8 @@ network:
     addr: "${local_ip}:${PAQET_PORT}"
     router_mac: "${gateway_mac}"
   tcp:
-    local_flag: ["PA"]
+    local_flag: ["S", "A", "PA"]
+    remote_flag: ["SA", "PA"]
 ${profile_network_pcap_fragment}
 
 transport:
@@ -3180,8 +3181,8 @@ network:
     addr: "${local_ip}:0"
     router_mac: "${gateway_mac}"
   tcp:
-    local_flag: ["PA"]
-    remote_flag: ["PA"]
+    local_flag: ["S", "A", "PA"]
+    remote_flag: ["SA", "PA"]
 ${profile_network_pcap_fragment}
 
 server:
@@ -7766,6 +7767,8 @@ status_diagnostics_menu() {
         echo -e "  ${CYAN}2)${NC} Safe Diagnostics"
         echo -e "  ${CYAN}3)${NC} Quick Health Check"
         echo -e "  ${CYAN}4)${NC} Discovery Warnings"
+        echo -e "  ${CYAN}5)${NC} Verify connection protection (iptables)"
+        echo -e "  ${CYAN}6)${NC} Reapply connection protection (iptables)"
         echo -e "  ${CYAN}0)${NC} Back"
         echo ""
         read -r -p "Choice: " status_choice < /dev/tty
@@ -7774,6 +7777,8 @@ status_diagnostics_menu() {
             2) diagnostics_menu ;;
             3) health_check_all_tunnels ;;
             4) show_duplicate_discovery_warnings ;;
+            5) verify_iptables_protection ;;
+            6) reapply_iptables_protection ;;
             0) return 0 ;;
             *) print_error "Invalid choice" ;;
         esac
@@ -8542,3 +8547,58 @@ if [[ "${PAQET_TEST_MODE:-0}" != "1" ]]; then
         main
     fi
 fi
+
+verify_iptables_protection() {
+    print_banner
+    echo -e "${YELLOW}Verifying iptables connection protection...${NC}"
+    echo ""
+    local found_rules=0
+    
+    if iptables -t raw -S | grep -q "NOTRACK"; then
+        echo -e "  [${GREEN}OK${NC}] Raw NOTRACK rules found"
+        found_rules=$((found_rules+1))
+    else
+        echo -e "  [${RED}MISSING${NC}] Raw NOTRACK rules not found"
+    fi
+    
+    if iptables -t mangle -S | grep -q "RST RST -j DROP"; then
+        echo -e "  [${GREEN}OK${NC}] Mangle RST DROP rules found"
+        found_rules=$((found_rules+1))
+    else
+        echo -e "  [${RED}MISSING${NC}] Mangle RST DROP rules not found"
+    fi
+    
+    echo ""
+    if [ "$found_rules" -eq 2 ]; then
+        print_success "Connection protection is fully active."
+    else
+        print_warning "Connection protection is missing or incomplete."
+        echo "You can reapply it from the diagnostics menu."
+    fi
+}
+
+reapply_iptables_protection() {
+    print_banner
+    echo -e "${YELLOW}Reapplying connection protection...${NC}"
+    
+    if [ -f "$PAQET_CONFIG_PATH/config.yaml" ]; then
+        local role
+        role=$(grep -E "^role:" "$PAQET_CONFIG_PATH/config.yaml" | awk '{print $2}' | tr -d '"')
+        if [ "$role" = "server" ]; then
+            local port
+            port=$(grep -E "addr:" "$PAQET_CONFIG_PATH/config.yaml" | head -n 1 | awk -F: '{print $NF}' | tr -d '"')
+            setup_iptables "$port"
+        else
+            local s_addr
+            s_addr=$(grep -E "addr:" "$PAQET_CONFIG_PATH/config.yaml" | head -n 1 | awk '{print $2}' | tr -d '"')
+            local s_ip
+            s_ip=$(echo "$s_addr" | cut -d: -f1)
+            local s_port
+            s_port=$(echo "$s_addr" | cut -d: -f2)
+            setup_iptables_client "$s_ip" "$s_port"
+        fi
+        print_success "Protection reapplied successfully."
+    else
+        print_error "Could not determine tunnel configuration."
+    fi
+}
