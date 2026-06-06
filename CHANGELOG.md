@@ -2,6 +2,14 @@
 
 All notable changes to Recoba Paqet Tunnel are documented in this file.
 
+## v2.1.9 — 2026-06-06
+
+### TCP Payload Return Path
+
+- Fixed Paqet TCP bridge lifecycle handling so one copy direction finishing normally no longer closes both sides before the opposite direction can deliver pending payload.
+- Added safe bidirectional TCP copy handling with `CloseWrite` support for TCP endpoints and ordered close signaling for stream endpoints that do not support half-close.
+- Added regression coverage for HTTP response delivery through the Paqet TCP bridge, including the case where the client request side finishes before the response is returned.
+
 ## v2.1.8 — 2026-06-06
 
 ### Manager UX and Reset

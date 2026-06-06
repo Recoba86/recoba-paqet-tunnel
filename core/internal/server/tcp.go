@@ -28,23 +28,13 @@ func (s *Server) handleTCP(ctx context.Context, strm tnet.Strm, addr string) err
 	}()
 	flog.Debugf("TCP connection established to %s for stream %d", addr, strm.SID())
 
-	errChan := make(chan error, 2)
-	go func() {
-		err := buffer.CopyT(conn, strm)
-		errChan <- err
-	}()
-	go func() {
-		err := buffer.CopyT(strm, conn)
-		errChan <- err
-	}()
-
-	select {
-	case err := <-errChan:
-		if err != nil {
-			flog.Errorf("TCP stream %d to %s failed: %v", strm.SID(), addr, err)
-			return err
-		}
-	case <-ctx.Done():
+	err = buffer.CopyBidirectional(ctx, strm, conn, buffer.TCPBridgeOptions{
+		AToB: buffer.TCPBridgeDirection{Name: "stream-to-target"},
+		BToA: buffer.TCPBridgeDirection{Name: "target-to-stream", CloseWhenNoWriter: true},
+	})
+	if err != nil {
+		flog.Errorf("TCP stream %d to %s failed: %v", strm.SID(), addr, err)
+		return err
 	}
 	return nil
 }

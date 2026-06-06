@@ -7,8 +7,8 @@ This project is based on the open-source [Paqet](https://github.com/hanselime/pa
 ## Repository and Version
 
 - GitHub: https://github.com/Recoba86/recoba-paqet-tunnel
-- Latest local tag: `v2.1.8`
-- Default installer release tag: `v2.1.8`
+- Latest local tag: `v2.1.9`
+- Default installer release tag: `v2.1.9`
 
 ## One-Click Install
 
@@ -190,7 +190,7 @@ The import screen is read-only by default. Optional migration copies configs, cr
 Release assets are built from clean, tagged commits:
 
 ```bash
-bash scripts/build_release.sh v2.1.8
+bash scripts/build_release.sh v2.1.9
 ```
 
 The script builds canonical `recoba-paqet-tunnel-linux-amd64.tar.gz` and `recoba-paqet-tunnel-linux-arm64.tar.gz` tarballs plus `SHA256SUMS` under `build/`. The installer can still fall back to older `recoba-tunnel-linux-*.tar.gz` release assets when needed.

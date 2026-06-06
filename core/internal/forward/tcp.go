@@ -55,23 +55,13 @@ func (f *Forward) handleTCPConn(ctx context.Context, conn net.Conn) error {
 	}()
 	flog.Infof("accepted TCP connection %s -> %s", conn.RemoteAddr(), f.targetAddr)
 
-	errCh := make(chan error, 2)
-	go func() {
-		err := buffer.CopyT(conn, strm)
-		errCh <- err
-	}()
-	go func() {
-		err := buffer.CopyT(strm, conn)
-		errCh <- err
-	}()
-
-	select {
-	case err := <-errCh:
-		if err != nil {
-			flog.Errorf("TCP stream %d failed for %s -> %s: %v", strm.SID(), conn.RemoteAddr(), f.targetAddr, err)
-			return err
-		}
-	case <-ctx.Done():
+	err = buffer.CopyBidirectional(ctx, conn, strm, buffer.TCPBridgeOptions{
+		AToB: buffer.TCPBridgeDirection{Name: "local-to-stream"},
+		BToA: buffer.TCPBridgeDirection{Name: "stream-to-local"},
+	})
+	if err != nil {
+		flog.Errorf("TCP stream %d failed for %s -> %s: %v", strm.SID(), conn.RemoteAddr(), f.targetAddr, err)
+		return err
 	}
 
 	return nil

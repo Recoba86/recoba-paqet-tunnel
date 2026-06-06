@@ -17,10 +17,10 @@ var (
 )
 
 var (
-	TCPWriteEnobufsTotal  uint64
-	TCPWriteRetryTotal    uint64
-	TCPWriteRetrySuccess  uint64
-	TCPWriteRetryFailed   uint64
+	TCPWriteEnobufsTotal uint64
+	TCPWriteRetryTotal   uint64
+	TCPWriteRetrySuccess uint64
+	TCPWriteRetryFailed  uint64
 )
 
 func SetTCPWriteRetryConfig(retries, retryUS, retryMaxUS int) {
@@ -52,7 +52,11 @@ func LogTCPWriteMetrics(reason string) {
 }
 
 func CopyT(dst io.Writer, src io.Reader) error {
-	buf := make([]byte, TPool)
+	poolSize := TPool
+	if poolSize <= 0 {
+		poolSize = 32 * 1024
+	}
+	buf := make([]byte, poolSize)
 
 	for {
 		nr, readErr := src.Read(buf)
