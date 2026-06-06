@@ -16,7 +16,7 @@ PROJECT_NAME="Recoba Paqet Tunnel"
 INSTALLER_VERSION="2.1.9"
 GITHUB_REPO="Recoba86/recoba-paqet-tunnel"
 INSTALLER_REPO="$GITHUB_REPO"
-RELEASE_TAG="v2.1.9"
+RELEASE_TAG="v2.1.10"
 INSTALLER_CMD="/usr/local/bin/recoba-paqet-tunnel"
 
 # --- Paths ---
