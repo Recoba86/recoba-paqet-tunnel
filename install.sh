@@ -6799,6 +6799,178 @@ rollback_paqet_core_menu() {
     return 1
 }
 
+#===============================================================================
+# TCP Flag Migration (v2.1.10+ NAT-safe handshake simulation)
+#===============================================================================
+
+# Detects configs with old-style TCP flags (e.g. only ["PA"]) and migrates
+# them to the correct NAT-traversal handshake flags.
+# Backs up each config before modifying.
+# Safe to run multiple times (idempotent: skips already-correct configs).
+restart_all_detected_services() {
+    local svc
+    local count=0
+    while IFS= read -r svc; do
+        [ -z "$svc" ] && continue
+        if systemctl restart "$svc" 2>/dev/null; then
+            print_success "Restarted: $svc"
+            count=$((count + 1))
+        else
+            print_warning "Could not restart: $svc"
+        fi
+    done < <(discover_paqet_services)
+    if [ "$count" -gt 0 ]; then
+        print_success "Restarted $count service(s)"
+    fi
+}
+
+migrate_tcp_flags_to_nat_safe() {
+    print_banner
+    echo -e "${YELLOW}Migrate Tunnel Configs to NAT-safe TCP Flags (v2.1.10+)${NC}"
+    echo ""
+    echo -e "${CYAN}This migrates existing configs from old flags (e.g. [\"PA\"])${NC}"
+    echo -e "${CYAN}to the correct handshake-simulating flags:${NC}"
+    echo -e "  Client: local_flag: [\"S\", \"A\", \"PA\"]  remote_flag: [\"SA\", \"PA\"]"
+    echo -e "  Server: local_flag: [\"SA\", \"PA\"]"
+    echo ""
+    echo -e "${YELLOW}A timestamped backup of each config will be created before changes.${NC}"
+    echo ""
+
+    local do_migrate=false
+    read_confirm "Proceed with migration?" do_migrate "y"
+    [ "$do_migrate" != true ] && return 0
+
+    local found=0
+    local migrated=0
+    local skipped=0
+
+    # Discover all known config paths
+    local config_paths=()
+    local p
+    for p in \
+        "$PAQET_DIR/config.yaml" \
+        "$PAQET_DIR/config-local-ubuntu.yaml" \
+        "$LEGACY_PAQET_DIR/config.yaml"; do
+        [ -f "$p" ] && config_paths+=("$p")
+    done
+    # Also discover any config*.yaml in PAQET_DIR
+    while IFS= read -r p; do
+        [ -f "$p" ] && config_paths+=("$p")
+    done < <(find "$PAQET_DIR" -maxdepth 1 -name 'config*.yaml' 2>/dev/null | sort)
+    # Deduplicate
+    local seen=()
+    local unique_paths=()
+    for p in "${config_paths[@]}"; do
+        local already=false
+        local s
+        for s in "${seen[@]:-}"; do [ "$s" = "$p" ] && already=true && break; done
+        if [ "$already" = false ]; then
+            seen+=("$p")
+            unique_paths+=("$p")
+        fi
+    done
+
+    if [ "${#unique_paths[@]}" -eq 0 ]; then
+        print_warning "No config files found in $PAQET_DIR"
+        return 0
+    fi
+
+    for p in "${unique_paths[@]}"; do
+        found=$((found+1))
+        echo ""
+        print_step "Checking: $p"
+
+        local role
+        role=$(grep -E "^role:" "$p" 2>/dev/null | awk '{print $2}' | tr -d '"' || echo "")
+        if [ -z "$role" ]; then
+            print_warning "  Could not detect role in $p — skipping"
+            skipped=$((skipped+1))
+            continue
+        fi
+        echo -e "  Role: ${CYAN}${role}${NC}"
+
+        # Check current local_flag
+        local cur_lf
+        cur_lf=$(grep -E '^ *local_flag:' "$p" 2>/dev/null | head -1 || echo "")
+        local cur_rf
+        cur_rf=$(grep -E '^ *remote_flag:' "$p" 2>/dev/null | head -1 || echo "")
+        echo -e "  Current: local_flag=${YELLOW}${cur_lf}${NC}  remote_flag=${YELLOW}${cur_rf:-<none>}${NC}"
+
+        # Determine target flags
+        local target_lf target_rf
+        if [ "$role" = "server" ]; then
+            target_lf='["SA", "PA"]'
+            target_rf=""
+        else
+            target_lf='["S", "A", "PA"]'
+            target_rf='["SA", "PA"]'
+        fi
+
+        # Check if already correct
+        local lf_ok=false rf_ok=false
+        echo "$cur_lf" | grep -qF "$target_lf" && lf_ok=true
+        if [ "$role" = "server" ]; then
+            rf_ok=true  # server doesn't need remote_flag
+        else
+            echo "$cur_rf" | grep -qF "$target_rf" && rf_ok=true
+        fi
+
+        if [ "$lf_ok" = true ] && [ "$rf_ok" = true ]; then
+            print_success "  Already up-to-date — skipping"
+            skipped=$((skipped+1))
+            continue
+        fi
+
+        # Backup
+        local backup_path
+        backup_path="${p}.bak.$(date +%Y%m%d-%H%M%S)"
+        cp "$p" "$backup_path"
+        print_step "  Backup: $backup_path"
+
+        # Apply migration with python3
+        python3 - "$p" "$role" "$target_lf" "$target_rf" << 'PYEOF'
+import sys, re
+fpath, role, target_lf, target_rf = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+with open(fpath, 'r') as fh:
+    content = fh.read()
+
+# Remove entire existing tcp block (handles multiple keys)
+content = re.sub(r'\n  tcp:\n(?:    \S+:.*\n)*', '', content)
+
+# Build new tcp block
+if role == 'server':
+    new_tcp = '\n  tcp:\n    local_flag: {}\n'.format(target_lf)
+else:
+    new_tcp = '\n  tcp:\n    local_flag: {}\n    remote_flag: {}\n'.format(target_lf, target_rf)
+
+# Insert after the network/ipv4 block (before server: or transport: key)
+content = re.sub(r'(\nnetwork:(?:.*\n)*?)(\n(?:server:|transport:))', lambda m: m.group(1) + new_tcp + m.group(2), content)
+with open(fpath, 'w') as fh:
+    fh.write(content)
+print('OK')
+PYEOF
+
+        local new_lf new_rf
+        new_lf=$(grep -E '^ *local_flag:' "$p" 2>/dev/null | head -1 || echo "")
+        new_rf=$(grep -E '^ *remote_flag:' "$p" 2>/dev/null | head -1 || echo "")
+        print_success "  Migrated: local_flag=${new_lf}  remote_flag=${new_rf:-<none>}"
+        migrated=$((migrated+1))
+    done
+
+    echo ""
+    echo -e "${GREEN}════════════════════════════════════════════════════════════${NC}"
+    print_success "Migration complete: $migrated migrated, $skipped skipped, $found total configs."
+    echo -e "${GREEN}════════════════════════════════════════════════════════════${NC}"
+    echo ""
+    if [ "$migrated" -gt 0 ]; then
+        local do_restart=false
+        read_confirm "Restart tunnel services to apply new flags?" do_restart "y"
+        if [ "$do_restart" = true ]; then
+            restart_all_detected_services
+        fi
+    fi
+}
+
 core_management_menu() {
     while true; do
         print_banner
@@ -6816,6 +6988,7 @@ core_management_menu() {
         echo -e "  ${CYAN}6)${NC} View Active KCP Profile Preview (read-only)"
         echo -e "  ${CYAN}7)${NC} Show Effective Port/Profile Defaults"
         echo -e "  ${CYAN}8)${NC} Show Installed Core Metadata"
+        echo -e "  ${CYAN}9)${NC} Migrate configs to NAT-safe TCP flags (v2.1.10+)"
         echo -e "  ${CYAN}b)${NC} Core Benchmarking"
         echo -e "  ${CYAN}0)${NC} Back"
         echo ""
@@ -6830,6 +7003,7 @@ core_management_menu() {
             6) view_current_auto_profile ;;
             7) show_port_config ;;
             8) show_core_install_metadata ;;
+            9) migrate_tcp_flags_to_nat_safe ;;
             [Bb]) benchmark_menu ;;
             0) return 0 ;;
             *) print_error "Invalid choice" ;;
@@ -7871,16 +8045,16 @@ reapply_iptables_protection() {
     print_banner
     echo -e "${YELLOW}Reapplying connection protection...${NC}"
     
-    if [ -f "$PAQET_CONFIG_PATH/config.yaml" ]; then
+    if [ -f "$PAQET_DIR/config.yaml" ]; then
         local role
-        role=$(grep -E "^role:" "$PAQET_CONFIG_PATH/config.yaml" | awk '{print $2}' | tr -d '"')
+        role=$(grep -E "^role:" "$PAQET_DIR/config.yaml" | awk '{print $2}' | tr -d '"')
         if [ "$role" = "server" ]; then
             local port
-            port=$(grep -E "addr:" "$PAQET_CONFIG_PATH/config.yaml" | head -n 1 | awk -F: '{print $NF}' | tr -d '"')
+            port=$(grep -E "addr:" "$PAQET_DIR/config.yaml" | head -n 1 | awk -F: '{print $NF}' | tr -d '"')
             setup_iptables "$port"
         else
             local s_addr
-            s_addr=$(grep -E "addr:" "$PAQET_CONFIG_PATH/config.yaml" | head -n 1 | awk '{print $2}' | tr -d '"')
+            s_addr=$(grep -E "addr:" "$PAQET_DIR/config.yaml" | head -n 1 | awk '{print $2}' | tr -d '"')
             local s_ip
             s_ip=$(echo "$s_addr" | cut -d: -f1)
             local s_port
