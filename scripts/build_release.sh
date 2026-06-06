@@ -4,7 +4,7 @@
 #  Builds amd64 and arm64 binaries from ./core for GitHub Releases.
 #
 #  Usage: bash scripts/build_release.sh [version]
-#     eg: bash scripts/build_release.sh v2.1.5
+#     eg: bash scripts/build_release.sh v2.1.6
 #
 #  Prerequisites:
 #    - Docker (all builds use golang:1.26 images with CGo + libpcap)
@@ -17,7 +17,7 @@
 
 set -euo pipefail
 
-VERSION="${1:-v2.1.5}"
+VERSION="${1:-v2.1.6}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="$PROJECT_DIR/build"
@@ -50,7 +50,7 @@ if ! git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
     exit 1
 fi
 
-if [ "$(git rev-parse HEAD)" != "$(git rev-parse "$VERSION")" ]; then
+if [ "$(git rev-parse HEAD)" != "$(git rev-parse "${VERSION}^{}")" ]; then
     echo "ERROR: tag $VERSION does not point to HEAD."
     exit 1
 fi

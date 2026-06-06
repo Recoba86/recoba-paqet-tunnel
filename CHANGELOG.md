@@ -2,6 +2,13 @@
 
 All notable changes to Recoba Paqet Tunnel are documented in this file.
 
+## v2.1.6 — 2026-06-06
+
+### Release Assets
+
+- Updated the installer to prefer canonical `recoba-paqet-tunnel-linux-*.tar.gz` release assets and fall back to legacy `recoba-tunnel-linux-*.tar.gz` assets.
+- Kept release builds on the canonical Recoba Paqet Tunnel asset names.
+
 ## v2.1.5 — 2026-06-06
 
 ### Release Metadata

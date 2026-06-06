@@ -16,7 +16,7 @@ PROJECT_NAME="Recoba Paqet Tunnel"
 INSTALLER_VERSION="2.0.0"
 GITHUB_REPO="Recoba86/recoba-paqet-tunnel"
 INSTALLER_REPO="$GITHUB_REPO"
-RELEASE_TAG="v2.1.5"
+RELEASE_TAG="v2.1.6"
 INSTALLER_CMD="/usr/local/bin/recoba-paqet-tunnel"
 
 # --- Paths ---
@@ -1894,10 +1894,17 @@ resolve_recoba_core_asset() {
             ;;
     esac
 
-    # Match: recoba-paqet-tunnel-linux-<arch>.tar.gz
+    # Prefer canonical assets, but keep compatibility with releases published
+    # before the repository was renamed.
     local asset_pair=""
     asset_pair=$(printf '%s\n' "$api_json" | awk -v target_arch="$arch" '
-        BEGIN { current_name="" }
+        BEGIN {
+            current_name=""
+            canonical=""
+            legacy=""
+            canonical_name="recoba-paqet-tunnel-linux-" target_arch ".tar.gz"
+            legacy_name="recoba-tunnel-linux-" target_arch ".tar.gz"
+        }
         /"name"[[:space:]]*:/ {
             line=$0
             sub(/^.*"name"[[:space:]]*:[[:space:]]*"/, "", line)
@@ -1908,9 +1915,17 @@ resolve_recoba_core_asset() {
             line=$0
             sub(/^.*"browser_download_url"[[:space:]]*:[[:space:]]*"/, "", line)
             sub(/".*$/, "", line)
-            if (current_name ~ /recoba-paqet-tunnel/ && current_name ~ /tar\.gz/ && current_name ~ target_arch) {
-                print current_name "|" line
-                exit
+            if (current_name == canonical_name) {
+                canonical=current_name "|" line
+            } else if (current_name == legacy_name) {
+                legacy=current_name "|" line
+            }
+        }
+        END {
+            if (canonical != "") {
+                print canonical
+            } else if (legacy != "") {
+                print legacy
             }
         }
     ')
@@ -3423,14 +3438,27 @@ download_recoba_core() {
     arch=$(detect_arch)
     
     local base_url="https://github.com/Recoba86/recoba-paqet-tunnel/releases/download/${target_version}"
-    local tarball="recoba-paqet-tunnel-linux-${arch}.tar.gz"
+    local canonical_tarball="recoba-paqet-tunnel-linux-${arch}.tar.gz"
+    local legacy_tarball="recoba-tunnel-linux-${arch}.tar.gz"
+    local tarball=""
     local checksums="SHA256SUMS"
     
     local temp_dir
     temp_dir=$(mktemp -d /tmp/recoba_update.XXXXXX)
     
-    print_step "Downloading $tarball..."
-    if ! curl -fsSL --max-time 30 "${base_url}/${tarball}" -o "${temp_dir}/${tarball}"; then
+    for candidate in "$canonical_tarball" "$legacy_tarball"; do
+        print_step "Downloading $candidate..."
+        if curl -fsSL --max-time 30 "${base_url}/${candidate}" -o "${temp_dir}/${candidate}"; then
+            tarball="$candidate"
+            break
+        fi
+        rm -f "${temp_dir:?}/${candidate}"
+        if [ "$candidate" = "$canonical_tarball" ]; then
+            print_warning "Canonical asset not found, trying legacy asset name..."
+        fi
+    done
+
+    if [ -z "$tarball" ]; then
         print_error "Failed to download core tarball"
         rm -rf "$temp_dir"
         return 1
