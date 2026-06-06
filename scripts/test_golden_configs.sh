@@ -93,12 +93,12 @@ expected_default_extra=$'    nodelay: 1
     sndwnd: 2048
     smuxbuf: 4194304
     streambuf: 2097152
-    dshard: 10
-    pshard: 3'
+    dshard: 0
+    pshard: 0'
 assert_eq "$expected_default_extra" "$default_extra" "golden default KCP extra fragment"
 
 assert_eq "aes" "$(get_effective_profile_kcp_block)" "golden iran-optimized block"
-assert_eq "1300" "$(get_effective_profile_kcp_mtu)" "golden iran-optimized MTU"
+assert_eq "1200" "$(get_effective_profile_kcp_mtu)" "golden iran-optimized MTU"
 
 client_yaml=$(cat <<YAML
 role: "client"
@@ -106,11 +106,11 @@ forward:${expected_mixed}
 
 transport:
   protocol: "kcp"
-  conn: 2
+  conn: 4
   kcp:
     mode: "fast"
     key: "secret"
-    mtu: 1300
+    mtu: 1200
     block: "aes"
 ${expected_default_extra}
 YAML
@@ -118,7 +118,8 @@ YAML
 assert_contains "$client_yaml" 'forward:
   - listen: "0.0.0.0:1090"' "golden assembled client forward header"
 assert_contains "$client_yaml" '    protocol: "udp"' "golden assembled client UDP entry"
-assert_contains "$client_yaml" '    dshard: 10' "golden assembled default KCP tuning"
+assert_contains "$client_yaml" '    dshard: 0' "golden assembled default KCP tuning (FEC off)"
+assert_contains "$client_yaml" '  conn: 4' "golden assembled default conn=4"
 
 detect_interface_mtu() { [ "${1:-}" = "eth0" ] && echo "1300"; }
 
@@ -155,7 +156,7 @@ applied_yaml="$(cat "$sample_config")"
 assert_contains "$applied_yaml" '  - listen: "0.0.0.0:1090"' "profile apply preserves listen mapping"
 assert_contains "$applied_yaml" 'server:
   addr: "203.0.113.10:8888"' "profile apply preserves server address"
-assert_contains "$applied_yaml" '  conn: 2' "profile apply writes iran-optimized conn=2"
+assert_contains "$applied_yaml" '  conn: 4' "profile apply writes iran-optimized conn=4"
 assert_contains "$applied_yaml" '    block: "aes"' "profile apply writes iran-optimized block aes"
 assert_contains "$applied_yaml" '    dshard: 0' "profile apply writes FEC off dshard=0"
 assert_contains "$applied_yaml" '    pshard: 0' "profile apply writes FEC off pshard=0"
@@ -191,12 +192,12 @@ detect_total_mem_mb() { echo "8192"; }
 detect_cpu_cores() { echo "4"; }
 apply_profile_preset_to_config_file "$default_config" "default"
 applied_default_yaml="$(cat "$default_config")"
-assert_contains "$applied_default_yaml" '  conn: 2' "default profile caps low-MTU conn"
+assert_contains "$applied_default_yaml" '  conn: 4' "default profile caps low-MTU conn"
 assert_contains "$applied_default_yaml" '    mtu: 1200' "default profile applies safe interface MTU headroom"
-assert_contains "$applied_default_yaml" '    rcvwnd: 1536' "default profile caps low-MTU receive window"
-assert_contains "$applied_default_yaml" '    sndwnd: 1536' "default profile caps low-MTU send window"
-assert_contains "$applied_default_yaml" '    smuxbuf: 4194304' "default profile caps low-MTU smux buffer"
-assert_contains "$applied_default_yaml" '    streambuf: 2097152' "default profile caps low-MTU stream buffer"
+assert_contains "$applied_default_yaml" '    rcvwnd: 4096' "default profile keeps auto-tuned receive window"
+assert_contains "$applied_default_yaml" '    sndwnd: 4096' "default profile keeps auto-tuned send window"
+assert_contains "$applied_default_yaml" '    smuxbuf: 4194304' "default profile smux buffer"
+assert_contains "$applied_default_yaml" '    streambuf: 2097152' "default profile stream buffer"
 assert_contains "$applied_default_yaml" '    nocongestion: 0' "default profile enables congestion control"
 
 printf 'All golden config tests passed (%s assertions).\n' "$pass_count"

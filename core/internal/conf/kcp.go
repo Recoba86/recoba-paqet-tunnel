@@ -42,40 +42,27 @@ func (k *KCP) setDefaults(role string) {
 		k.Mode = "fast"
 	}
 	if k.MTU == 0 {
-		k.MTU = 1350
+		k.MTU = 1200
 	}
 
 	if k.Rcvwnd == 0 {
-		if role == "server" {
-			k.Rcvwnd = 1024
-		} else {
-			k.Rcvwnd = 512
-		}
+		k.Rcvwnd = 3072
 	}
 	if k.Sndwnd == 0 {
-		if role == "server" {
-			k.Sndwnd = 1024
-		} else {
-			k.Sndwnd = 512
-		}
+		k.Sndwnd = 3072
 	}
 
-	// if k.Dshard == 0 {
-	// 	k.Dshard = 10
-	// }
-	// if k.Pshard == 0 {
-	// 	k.Pshard = 3
-	// }
+	// dshard/pshard default to 0 (FEC disabled)
 
 	if k.Block_ == "" {
 		k.Block_ = "aes"
 	}
 
 	if k.Smuxbuf == 0 {
-		k.Smuxbuf = 4 * 1024 * 1024
+		k.Smuxbuf = 16 * 1024 * 1024
 	}
 	if k.Streambuf == 0 {
-		k.Streambuf = 2 * 1024 * 1024
+		k.Streambuf = 8 * 1024 * 1024
 	}
 
 	if k.Smuxkalive_ == 0 {

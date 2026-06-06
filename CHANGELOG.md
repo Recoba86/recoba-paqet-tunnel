@@ -1,5 +1,19 @@
 # Changelog
 
+## [v2.1.12] - 2026-06-07
+
+### Changed
+- **Stable-fast default profile**: New installations now use production-verified values:
+  `conn=4`, `mtu=1200`, `rcvwnd=3072`, `sndwnd=3072`, `smuxbuf=16M`, `streambuf=8M`, `dshard=0`, `pshard=0`, PA-only flags.
+- **TCP flag migration**: Now offers two profiles — PA-only Performance (default) and NAT-safe Handshake — selectable at runtime.
+- **FEC disabled by default**: `dshard` and `pshard` now default to 0 (no Forward Error Correction).
+- **Installer defaults**: All constants, auto-tune parameters, and profile presets aligned with the stable-fast profile.
+
+### Fixed
+- `verify_iptables_protection` and `reapply_iptables_protection` now available before menu dispatch.
+- Fixed undefined `PAQET_CONFIG_PATH` in `reapply_iptables_protection()`.
+- Added missing `restart_all_detected_services()` function.
+
 ## [v2.1.10] - 2026-06-06
 
 ### ⚠️ BREAKING CHANGE ⚠️
