@@ -272,4 +272,77 @@ install_core_for_active_services "$new_core" "v2.1.5" "v2.1.7" "$rows"
 assert_contains "$(cat "$LEGACY_PAQET_BIN")" "new-core" "update-core replaces legacy /opt/paqet/paqet when service uses it"
 assert_contains "$(cat "$tmp_dir/restarted-services.log")" "paqet-dubai" "update-core restarts only the owning service"
 
+menu_out="$(render_main_menu)"
+assert_contains "$menu_out" "1) Status & diagnostics" "main menu status entry"
+assert_contains "$menu_out" "6) Full uninstall / reset this node" "main menu reset entry"
+
+cat > "$SYSTEMD_SYSTEM_DIR/recoba-paqet-tunnel-germany.service" <<EOF
+[Service]
+ExecStart=$PAQET_BIN run -c $PAQET_DIR/config-germany.yaml
+EOF
+cat > "$SYSTEMD_SYSTEM_DIR/xray.service" <<'EOF'
+[Service]
+ExecStart=/usr/bin/xray run
+EOF
+mkdir -p "$PAQET_DIR" "$LEGACY_PAQET_DIR"
+touch "$tmp_dir/placeholder"
+
+targets_out="$(reset_node_targets)"
+assert_contains "$targets_out" "path|$LEGACY_PAQET_DIR" "reset target includes legacy /opt/paqet equivalent"
+assert_contains "$targets_out" "path|$PAQET_DIR" "reset target includes new install path"
+assert_contains "$targets_out" "unit|$SYSTEMD_SYSTEM_DIR/paqet-dubai.service" "reset target includes legacy systemd unit"
+assert_contains "$targets_out" "unit|$SYSTEMD_SYSTEM_DIR/recoba-paqet-tunnel-germany.service" "reset target includes new systemd unit"
+assert_not_contains "$targets_out" "xray.service" "reset targets exclude xray"
+assert_not_contains "$targets_out" "nginx" "reset targets exclude nginx"
+assert_not_contains "$targets_out" "x-ui" "reset targets exclude x-ui"
+
+dry_run_out="$(dry_run_full_reset_node)"
+assert_contains "$dry_run_out" "DRY-RUN" "reset dry-run announces dry run"
+assert_contains "$dry_run_out" "$LEGACY_PAQET_DIR" "reset dry-run shows legacy path"
+assert_contains "$dry_run_out" "Will NOT touch" "reset dry-run prints safety exclusions"
+
+check_root() { return 0; }
+systemctl() {
+    case "${1:-}" in
+        cat)
+            local svc="${2%.service}"
+            [ -f "$SYSTEMD_SYSTEM_DIR/${svc}.service" ] && cat "$SYSTEMD_SYSTEM_DIR/${svc}.service"
+            ;;
+        is-active)
+            return 0
+            ;;
+        restart|stop|disable|daemon-reload|reset-failed)
+            return 0
+            ;;
+        list-unit-files)
+            find "$SYSTEMD_SYSTEM_DIR" -maxdepth 1 -name '*.service' -exec basename {} \;
+            ;;
+        list-units)
+            return 0
+            ;;
+        show)
+            return 1
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
+help_out="$(handle_cli_args --help)"
+assert_contains "$help_out" "--reset-node" "CLI help mentions reset-node"
+
+cli_dry_out="$(handle_cli_args --reset-node --dry-run)"
+assert_contains "$cli_dry_out" "DRY-RUN" "CLI reset dry-run works"
+
+mkdir -p "$LEGACY_PAQET_DIR" "$PAQET_DIR"
+CLI_ASSUME_YES=false
+forced_out="$(handle_cli_args --yes --reset-node)"
+assert_contains "$forced_out" "Full reset completed" "CLI --yes reset runs without prompt"
+if [ -e "$LEGACY_PAQET_DIR" ] || [ -e "$PAQET_DIR" ]; then
+    printf 'FAIL: forced reset did not remove expected install dirs\n' >&2
+    exit 1
+fi
+pass_count=$((pass_count + 1))
+
 printf 'All pure logic tests passed (%s assertions).\n' "$pass_count"

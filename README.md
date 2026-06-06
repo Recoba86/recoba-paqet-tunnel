@@ -7,8 +7,8 @@ This project is based on the open-source [Paqet](https://github.com/hanselime/pa
 ## Repository and Version
 
 - GitHub: https://github.com/Recoba86/recoba-paqet-tunnel
-- Latest local tag: `v2.1.7`
-- Default installer release tag: `v2.1.7`
+- Latest local tag: `v2.1.8`
+- Default installer release tag: `v2.1.8`
 
 ## One-Click Install
 
@@ -45,6 +45,50 @@ The manager detects existing Paqet installs before migration:
 - Binaries: `/opt/paqet/paqet`, `/opt/recoba-paqet-tunnel/paqet`, and `/opt/recoba-paqet-tunnel/recoba-paqet-tunnel`.
 
 `Check Status` and `Safe Diagnostics` show legacy tunnels even when they remain externally managed. `Update/Reinstall Core` parses each active systemd `ExecStart`, backs up the binary actually used by that service, replaces that binary, and restarts only the affected service.
+
+## Manager Menu
+
+```text
+Recoba Paqet Tunnel Manager
+
+1) Status & diagnostics
+2) Setup / add tunnel
+3) Manage existing tunnels
+4) Core update
+5) Backup / restore
+6) Full uninstall / reset this node
+0) Exit
+```
+
+## Full Uninstall / Reset Node
+
+The reset flow is explicit and only targets Recoba/Paqet-managed items. It stops/disables and removes service units matching `paqet*.service` and `recoba-paqet-tunnel*.service`, removes `/opt/paqet`, `/opt/recoba-paqet-tunnel`, and known temporary Paqet/Recoba files under `/tmp`.
+
+It does not touch `x-ui`, `xray`, `nginx`, `certbot`, unrelated services, user SSH keys, or firewall rules.
+
+Dry-run reset:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/Recoba86/recoba-paqet-tunnel/main/install.sh) --reset-node --dry-run
+```
+
+Interactive reset with typed confirmation:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/Recoba86/recoba-paqet-tunnel/main/install.sh) --reset-node
+```
+
+Forced reset without prompt:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/Recoba86/recoba-paqet-tunnel/main/install.sh) --yes --reset-node
+```
+
+Without `--yes`, you must type:
+
+```text
+RESET THIS NODE
+```
 
 ## Install Server A
 
@@ -146,7 +190,7 @@ The import screen is read-only by default. Optional migration copies configs, cr
 Release assets are built from clean, tagged commits:
 
 ```bash
-bash scripts/build_release.sh v2.1.7
+bash scripts/build_release.sh v2.1.8
 ```
 
 The script builds canonical `recoba-paqet-tunnel-linux-amd64.tar.gz` and `recoba-paqet-tunnel-linux-arm64.tar.gz` tarballs plus `SHA256SUMS` under `build/`. The installer can still fall back to older `recoba-tunnel-linux-*.tar.gz` release assets when needed.

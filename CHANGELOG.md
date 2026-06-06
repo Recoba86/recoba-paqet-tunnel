@@ -2,6 +2,16 @@
 
 All notable changes to Recoba Paqet Tunnel are documented in this file.
 
+## v2.1.8 — 2026-06-06
+
+### Manager UX and Reset
+
+- Reworked the top-level manager menu into focused sections for status, setup, tunnel management, core update, backup/restore, and full node reset.
+- Added explicit full uninstall/reset flow with `RESET THIS NODE` confirmation, dry-run support, and exact cleanup targets for Paqet/Recoba services, unit files, install paths, and known temp files.
+- Added non-interactive flags: `--help`, `--reset-node`, `--uninstall`, `--dry-run`, and `--yes --reset-node`.
+- Added backup/restore menu for Paqet/Recoba configs, services, and binaries.
+- Added regression coverage for reset targets, safety exclusions, dry-run output, and CLI flags.
+
 ## v2.1.7 — 2026-06-06
 
 ### Legacy Import and Diagnostics

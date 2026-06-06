@@ -13,10 +13,10 @@ set -e
 
 # --- Project Identity ---
 PROJECT_NAME="Recoba Paqet Tunnel"
-INSTALLER_VERSION="2.1.7"
+INSTALLER_VERSION="2.1.8"
 GITHUB_REPO="Recoba86/recoba-paqet-tunnel"
 INSTALLER_REPO="$GITHUB_REPO"
-RELEASE_TAG="v2.1.7"
+RELEASE_TAG="v2.1.8"
 INSTALLER_CMD="/usr/local/bin/recoba-paqet-tunnel"
 
 # --- Paths ---
@@ -36,6 +36,8 @@ CORE_META="$PAQET_DIR/core-metadata.env"
 CORE_CACHE_DIR="$PAQET_DIR/core-cache"
 CORE_CACHE_ARCHIVE_DIR="$CORE_CACHE_DIR/archives"
 DEFAULT_CORE_PROFILE_PRESET="iran-optimized"
+BACKUP_ROOT="/root/recoba-paqet-tunnel-backups"
+CLI_ASSUME_YES=false
 
 # --- Default KCP / Transport Profile ---
 DEFAULT_PAQET_PORT="8888"
@@ -7741,6 +7743,501 @@ diagnostics_menu() {
     fi
 }
 
+show_duplicate_discovery_warnings() {
+    local configs=""
+    local duplicates=""
+    configs=$(discover_paqet_config_paths)
+
+    duplicates=$(echo "$configs" | awk -F/ '{print $NF}' | sort | uniq -d)
+    if [ -n "$duplicates" ]; then
+        print_warning "Duplicate config filenames detected across legacy/new paths:"
+        echo "$duplicates" | while IFS= read -r name; do
+            [ -n "$name" ] && echo "  $name"
+        done
+    fi
+}
+
+status_diagnostics_menu() {
+    while true; do
+        print_banner
+        echo -e "${YELLOW}Status & Diagnostics${NC}"
+        echo ""
+        echo -e "  ${CYAN}1)${NC} Check Status"
+        echo -e "  ${CYAN}2)${NC} Safe Diagnostics"
+        echo -e "  ${CYAN}3)${NC} Quick Health Check"
+        echo -e "  ${CYAN}4)${NC} Discovery Warnings"
+        echo -e "  ${CYAN}0)${NC} Back"
+        echo ""
+        read -r -p "Choice: " status_choice < /dev/tty
+        case "$status_choice" in
+            1) check_status ;;
+            2) diagnostics_menu ;;
+            3) health_check_all_tunnels ;;
+            4) show_duplicate_discovery_warnings ;;
+            0) return 0 ;;
+            *) print_error "Invalid choice" ;;
+        esac
+        echo ""
+        echo -e "${YELLOW}Press Enter to continue...${NC}"
+        read -r < /dev/tty
+    done
+}
+
+setup_add_tunnel_menu() {
+    while true; do
+        print_banner
+        echo -e "${YELLOW}Setup / Add Tunnel${NC}"
+        echo ""
+        echo -e "  ${CYAN}1)${NC} Setup Server A / Entry node"
+        echo -e "  ${CYAN}2)${NC} Setup Server B / Exit node"
+        echo -e "  ${CYAN}3)${NC} Add another location/tunnel"
+        echo -e "  ${CYAN}0)${NC} Back"
+        echo ""
+        read -r -p "Choice: " setup_choice < /dev/tty
+        case "$setup_choice" in
+            1|3) run_iran_optimizations; install_dependencies; setup_server_a ;;
+            2) install_dependencies; setup_server_b ;;
+            0) return 0 ;;
+            *) print_error "Invalid choice" ;;
+        esac
+        echo ""
+        echo -e "${YELLOW}Press Enter to continue...${NC}"
+        read -r < /dev/tty
+    done
+}
+
+view_tunnel_logs() {
+    select_tunnel "Select tunnel to view logs" || return 1
+    journalctl -u "$PAQET_SERVICE" --no-pager -n 100
+}
+
+tunnel_autostart_action() {
+    local action="$1"
+    select_tunnel "Select tunnel to $action autostart" || return 1
+    systemctl_or_dry_run "$action" "$PAQET_SERVICE"
+    print_success "Autostart ${action}d for $PAQET_SERVICE"
+}
+
+manage_existing_tunnels_menu() {
+    while true; do
+        print_banner
+        echo -e "${YELLOW}Manage Existing Tunnels${NC}"
+        echo ""
+        list_tunnels || true
+        echo ""
+        echo -e "  ${CYAN}1)${NC} Start a tunnel"
+        echo -e "  ${CYAN}2)${NC} Stop a tunnel"
+        echo -e "  ${CYAN}3)${NC} Restart a tunnel"
+        echo -e "  ${CYAN}4)${NC} Enable autostart"
+        echo -e "  ${CYAN}5)${NC} Disable autostart"
+        echo -e "  ${CYAN}6)${NC} View config"
+        echo -e "  ${CYAN}7)${NC} View logs"
+        echo -e "  ${CYAN}8)${NC} Delete one tunnel safely"
+        echo -e "  ${CYAN}9)${NC} Import legacy tunnel"
+        echo -e "  ${CYAN}0)${NC} Back"
+        echo ""
+        read -r -p "Choice: " manage_choice < /dev/tty
+        case "$manage_choice" in
+            1) tunnel_service_action "start" ;;
+            2) tunnel_service_action "stop" ;;
+            3) tunnel_service_action "restart" ;;
+            4) tunnel_autostart_action "enable" ;;
+            5) tunnel_autostart_action "disable" ;;
+            6) view_config ;;
+            7) view_tunnel_logs ;;
+            8) remove_tunnel ;;
+            9) import_existing_installation_menu ;;
+            0) return 0 ;;
+            *) print_error "Invalid choice" ;;
+        esac
+        echo ""
+        echo -e "${YELLOW}Press Enter to continue...${NC}"
+        read -r < /dev/tty
+    done
+}
+
+update_selected_service_core() {
+    local rows=""
+    local row=""
+    local idx=0
+    local selected=""
+    local latest_tag=""
+    local temp_dir=""
+    local old_ver=""
+    local binary=""
+    local service=""
+    local config=""
+
+    rows=$(discover_active_paqet_service_rows)
+    if [ -z "$rows" ]; then
+        print_error "No active paqet services with detectable binaries found."
+        return 1
+    fi
+
+    echo -e "${YELLOW}Active services:${NC}"
+    while IFS= read -r row; do
+        [ -z "$row" ] && continue
+        idx=$((idx + 1))
+        IFS='|' read -r service binary config <<< "$row"
+        echo -e "  ${CYAN}${idx})${NC} ${service} -> ${binary}"
+    done <<< "$rows"
+    echo ""
+    read -r -p "Choice: " update_choice < /dev/tty
+    if ! [[ "$update_choice" =~ ^[0-9]+$ ]] || [ "$update_choice" -lt 1 ] || [ "$update_choice" -gt "$idx" ]; then
+        print_error "Invalid choice"
+        return 1
+    fi
+
+    selected=$(echo "$rows" | sed -n "${update_choice}p")
+    IFS='|' read -r service binary config <<< "$selected"
+    latest_tag=$(get_latest_paqet_release_tag_for_provider "$(get_current_core_provider)")
+    [ -z "$latest_tag" ] && { print_error "Could not determine latest release."; return 1; }
+    old_ver=$(extract_recoba_version_from_text "$("$binary" version 2>/dev/null | head -1 || true)")
+
+    local do_update=false
+    read_confirm "Update ${service} binary ${binary} to ${latest_tag}?" do_update "y"
+    [ "$do_update" != true ] && return 0
+
+    temp_dir=$(download_recoba_core "$latest_tag" | tail -1)
+    [ -d "$temp_dir" ] || return 1
+    UPDATED_CORE_BACKUPS=""
+    install_core_for_active_services "${temp_dir}/recoba-paqet-tunnel" "$old_ver" "$latest_tag" "$selected"
+    rm -rf "$temp_dir"
+}
+
+core_update_menu() {
+    while true; do
+        print_banner
+        echo -e "${YELLOW}Core Update${NC}"
+        echo ""
+        show_core_management_status
+        echo ""
+        echo -e "  ${CYAN}1)${NC} Update core binary for all detected active services"
+        echo -e "  ${CYAN}2)${NC} Update selected service only"
+        echo -e "  ${CYAN}3)${NC} Advanced core/profile management"
+        echo -e "  ${CYAN}0)${NC} Back"
+        echo ""
+        read -r -p "Choice: " core_update_choice < /dev/tty
+        case "$core_update_choice" in
+            1) safe_update_core ;;
+            2) update_selected_service_core ;;
+            3) core_management_menu ;;
+            0) return 0 ;;
+            *) print_error "Invalid choice" ;;
+        esac
+        echo ""
+        echo -e "${YELLOW}Press Enter to continue...${NC}"
+        read -r < /dev/tty
+    done
+}
+
+backup_all_state() {
+    local ts=""
+    local archive=""
+    ts=$(date +%Y%m%d-%H%M%S 2>/dev/null || date +%s)
+    archive="$BACKUP_ROOT/recoba-paqet-node-${ts}.tar.gz"
+    mkdir -p "$BACKUP_ROOT"
+
+    local include_paths=()
+    local path=""
+    for path in "$LEGACY_PAQET_DIR" "$PAQET_DIR"; do
+        [ -e "$path" ] && include_paths+=("$path")
+    done
+    while IFS= read -r path; do
+        [ -e "$path" ] && include_paths+=("$path")
+    done < <(find "$SYSTEMD_SYSTEM_DIR" -maxdepth 1 \( -name 'paqet*.service' -o -name 'recoba-paqet-tunnel*.service' \) \( -type f -o -type l \) 2>/dev/null | sort)
+
+    if [ "${#include_paths[@]}" -eq 0 ]; then
+        print_error "Nothing to back up."
+        return 1
+    fi
+
+    tar -czf "$archive" "${include_paths[@]}" 2>/dev/null || { print_error "Backup failed"; return 1; }
+    chmod 600 "$archive" 2>/dev/null || true
+    print_success "Backup created: $archive"
+}
+
+restore_state_backup() {
+    local backups=()
+    local b=""
+    local idx=0
+    mkdir -p "$BACKUP_ROOT"
+    while IFS= read -r b; do
+        [ -f "$b" ] && backups+=("$b")
+    done < <(find "$BACKUP_ROOT" -maxdepth 1 -type f -name 'recoba-paqet-node-*.tar.gz' 2>/dev/null | sort -r)
+
+    if [ "${#backups[@]}" -eq 0 ]; then
+        print_error "No backups found in $BACKUP_ROOT"
+        return 1
+    fi
+
+    for b in "${backups[@]}"; do
+        idx=$((idx + 1))
+        echo -e "  ${CYAN}${idx})${NC} $b"
+    done
+    read -r -p "Select backup to restore: " restore_choice < /dev/tty
+    if ! [[ "$restore_choice" =~ ^[0-9]+$ ]] || [ "$restore_choice" -lt 1 ] || [ "$restore_choice" -gt "${#backups[@]}" ]; then
+        print_error "Invalid choice"
+        return 1
+    fi
+
+    local do_restore=false
+    read_confirm "Restore selected backup over current Paqet/Recoba files?" do_restore "n"
+    [ "$do_restore" != true ] && return 0
+
+    tar -xzf "${backups[$((restore_choice - 1))]}" -C / || { print_error "Restore failed"; return 1; }
+    systemctl daemon-reload 2>/dev/null || true
+    print_success "Backup restored."
+}
+
+backup_restore_menu() {
+    while true; do
+        print_banner
+        echo -e "${YELLOW}Backup / Restore${NC}"
+        echo ""
+        echo -e "  ${CYAN}1)${NC} Backup all configs/services/binaries"
+        echo -e "  ${CYAN}2)${NC} Restore from backup"
+        echo -e "  ${CYAN}3)${NC} Core binary rollback menu"
+        echo -e "  ${CYAN}0)${NC} Back"
+        echo ""
+        read -r -p "Choice: " backup_choice < /dev/tty
+        case "$backup_choice" in
+            1) backup_all_state ;;
+            2) restore_state_backup ;;
+            3) rollback_paqet_core_menu ;;
+            0) return 0 ;;
+            *) print_error "Invalid choice" ;;
+        esac
+        echo ""
+        echo -e "${YELLOW}Press Enter to continue...${NC}"
+        read -r < /dev/tty
+    done
+}
+
+full_reset_menu() {
+    full_reset_node false
+}
+
+render_main_menu() {
+    cat <<'EOF'
+Recoba Paqet Tunnel Manager
+
+1) Status & diagnostics
+2) Setup / add tunnel
+3) Manage existing tunnels
+4) Core update
+5) Backup / restore
+6) Full uninstall / reset this node
+0) Exit
+EOF
+}
+
+discover_reset_services() {
+    local seen=""
+    local service=""
+    local unit=""
+
+    if [ -d "$SYSTEMD_SYSTEM_DIR" ]; then
+        while IFS= read -r unit; do
+            [ -z "$unit" ] && continue
+            service=$(service_unit_name "$unit")
+            case "$service" in
+                paqet*|recoba-paqet-tunnel*) ;;
+                *) continue ;;
+            esac
+            if ! echo "$seen" | grep -Fxq "$service"; then
+                echo "$service"
+                seen="${seen}
+${service}"
+            fi
+        done < <(find "$SYSTEMD_SYSTEM_DIR" -maxdepth 1 \( -name 'paqet*.service' -o -name 'recoba-paqet-tunnel*.service' \) \( -type f -o -type l \) 2>/dev/null | sort)
+    fi
+
+    if command -v systemctl >/dev/null 2>&1; then
+        while IFS= read -r service; do
+            [ -z "$service" ] && continue
+            service=$(service_unit_name "$service")
+            case "$service" in
+                paqet*|recoba-paqet-tunnel*) ;;
+                *) continue ;;
+            esac
+            if ! echo "$seen" | grep -Fxq "$service"; then
+                echo "$service"
+                seen="${seen}
+${service}"
+            fi
+        done < <(systemctl list-unit-files 'paqet*.service' 'recoba-paqet-tunnel*.service' --no-legend --no-pager 2>/dev/null | awk '{print $1}' | sort)
+    fi
+}
+
+reset_node_targets() {
+    local service=""
+    local unit=""
+    local path=""
+
+    while IFS= read -r service; do
+        [ -z "$service" ] && continue
+        echo "service|$service"
+    done < <(discover_reset_services)
+
+    if [ -d "$SYSTEMD_SYSTEM_DIR" ]; then
+        while IFS= read -r unit; do
+            [ -e "$unit" ] && echo "unit|$unit"
+        done < <(find "$SYSTEMD_SYSTEM_DIR" -maxdepth 1 \( -name 'paqet*.service' -o -name 'recoba-paqet-tunnel*.service' \) \( -type f -o -type l \) 2>/dev/null | sort)
+    fi
+
+    for path in "$LEGACY_PAQET_DIR" "$PAQET_DIR"; do
+        [ -e "$path" ] && echo "path|$path"
+    done
+
+    if [ -d /tmp ]; then
+        while IFS= read -r path; do
+            [ -e "$path" ] && echo "tmp|$path"
+        done < <(find /tmp -maxdepth 1 \( -name 'paqet.*' -o -name 'paqet-*' -o -name 'paqet_install_new.*' -o -name 'paqet-tunnel-install.*' -o -name 'paqet-extract.*' -o -name 'recoba_update.*' -o -name 'recoba-paqet-tunnel.*' \) 2>/dev/null | sort)
+    fi
+}
+
+show_reset_plan() {
+    echo -e "${YELLOW}Full reset will remove only Recoba/Paqet-managed items:${NC}"
+    echo ""
+    echo -e "${CYAN}Services to stop/disable:${NC}"
+    local any=0
+    while IFS= read -r service; do
+        [ -z "$service" ] && continue
+        any=1
+        echo "  $service"
+    done < <(discover_reset_services)
+    [ "$any" -eq 0 ] && echo "  None detected"
+    echo ""
+
+    echo -e "${CYAN}Files/directories to remove:${NC}"
+    any=0
+    reset_node_targets | while IFS='|' read -r kind path; do
+        case "$kind" in
+            unit|path|tmp)
+                any=1
+                echo "  $path"
+                ;;
+        esac
+    done
+    if [ -z "$(reset_node_targets | grep -E '^(unit|path|tmp)\|' || true)" ]; then
+        echo "  None detected"
+    fi
+    echo ""
+    echo -e "${CYAN}Will run after cleanup:${NC}"
+    echo "  systemctl daemon-reload"
+    echo "  systemctl reset-failed"
+    echo ""
+    echo -e "${YELLOW}Will NOT touch:${NC}"
+    echo "  x-ui, xray, nginx, certbot, unrelated services, user SSH keys, firewall rules"
+}
+
+confirm_destructive_action() {
+    local phrase="RESET THIS NODE"
+    local typed=""
+
+    if [ "$CLI_ASSUME_YES" = true ]; then
+        print_warning "--yes supplied; skipping typed confirmation."
+        return 0
+    fi
+
+    print_warning "This is destructive and intended only for resetting this node's Paqet/Recoba install."
+    echo -e "${YELLOW}Type exactly '${phrase}' to continue:${NC}"
+    if [ -r /dev/tty ]; then
+        read -r -p "> " typed < /dev/tty
+    else
+        read -r -p "> " typed
+    fi
+
+    if [ "$typed" != "$phrase" ]; then
+        print_error "Confirmation did not match. Reset cancelled."
+        return 1
+    fi
+}
+
+dry_run_full_reset_node() {
+    print_banner
+    echo -e "${YELLOW}Dry Run: Full Uninstall / Reset This Node${NC}"
+    echo ""
+    show_reset_plan
+    echo ""
+    print_success "DRY-RUN: no files, services, ports, or firewall rules were changed."
+}
+
+full_reset_node() {
+    local dry_run="${1:-false}"
+    local failures=0
+    local service=""
+    local target=""
+    local kind=""
+
+    if [ "$dry_run" = true ] || is_dry_run; then
+        dry_run_full_reset_node
+        return 0
+    fi
+
+    print_banner
+    echo -e "${YELLOW}Full Uninstall / Reset This Node${NC}"
+    echo ""
+    show_reset_plan
+    echo ""
+    confirm_destructive_action || return 1
+
+    print_step "Stopping and disabling Recoba/Paqet services..."
+    while IFS= read -r service; do
+        [ -z "$service" ] && continue
+        systemctl stop "$service" 2>/dev/null || failures=$((failures + 1))
+        systemctl disable "$service" 2>/dev/null || true
+        print_info "Stopped/disabled: $service"
+    done < <(discover_reset_services)
+
+    print_step "Removing exact Recoba/Paqet service units and paths..."
+    while IFS='|' read -r kind target; do
+        [ -z "$kind" ] && continue
+        case "$kind" in
+            unit)
+                if [ -e "$target" ] || [ -L "$target" ]; then
+                    rm -f "$target" || failures=$((failures + 1))
+                    print_info "Removed unit: $target"
+                fi
+                ;;
+            path|tmp)
+                case "$target" in
+                    "$LEGACY_PAQET_DIR"|"$PAQET_DIR"|/tmp/paqet.*|/tmp/paqet-*|/tmp/paqet_install_new.*|/tmp/recoba_update.*|/tmp/recoba-paqet-tunnel.*)
+                        if [ -e "$target" ]; then
+                            rm -rf "$target" || failures=$((failures + 1))
+                            print_info "Removed: $target"
+                        fi
+                        ;;
+                    *)
+                        print_warning "Skipped unexpected reset target: $target"
+                        ;;
+                esac
+                ;;
+        esac
+    done < <(reset_node_targets)
+
+    systemctl daemon-reload 2>/dev/null || failures=$((failures + 1))
+    systemctl reset-failed 2>/dev/null || true
+
+    echo ""
+    echo -e "${YELLOW}Post-reset verification:${NC}"
+    echo -e "${CYAN}$ systemctl list-units --all | grep -Ei \"paqet|recoba\"${NC}"
+    systemctl list-units --all 2>/dev/null | grep -Ei "paqet|recoba" || true
+    echo -e "${CYAN}$ ss -tlnup | grep -E ':(1090|1091|1092|1093|8888|9998|9999)\\b'${NC}"
+    ss -tlnup 2>/dev/null | grep -E ':(1090|1091|1092|1093|8888|9998|9999)\b' || true
+    echo -e "${CYAN}$ ls -ld /opt/paqet /opt/recoba-paqet-tunnel${NC}"
+    ls -ld "$LEGACY_PAQET_DIR" "$PAQET_DIR" 2>/dev/null || true
+
+    echo ""
+    if [ "$failures" -gt 0 ]; then
+        print_error "Reset completed with $failures cleanup error(s)."
+        return 1
+    fi
+    print_success "Full reset completed."
+    return 0
+}
+
 import_existing_installation_menu() {
     print_banner
     echo -e "${YELLOW}Import Existing paqet Installation${NC}"
@@ -7920,6 +8417,66 @@ EOF
 # Main Menu
 #===============================================================================
 
+show_cli_help() {
+    cat <<EOF
+Recoba Paqet Tunnel Manager v${INSTALLER_VERSION}
+
+Usage:
+  install.sh
+  install.sh --help
+  install.sh --uninstall
+  install.sh --reset-node [--dry-run]
+  install.sh --yes --reset-node
+
+Options:
+  --help        Show this help and exit.
+  --uninstall   Open the safe full reset flow with typed confirmation.
+  --reset-node  Reset this node by removing only Paqet/Recoba services, units, exact install paths, and known temp files.
+  --dry-run     Show reset targets without changing the host.
+  --yes         Skip typed confirmation for --reset-node.
+EOF
+}
+
+handle_cli_args() {
+    local reset_node=false
+    local dry_run=false
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --help|-h)
+                show_cli_help
+                return 0
+                ;;
+            --uninstall|--reset-node)
+                reset_node=true
+                ;;
+            --dry-run)
+                dry_run=true
+                PAQET_DRY_RUN=1
+                ;;
+            --yes|-y)
+                CLI_ASSUME_YES=true
+                ;;
+            *)
+                print_error "Unknown option: $1"
+                echo ""
+                show_cli_help
+                return 2
+                ;;
+        esac
+        shift
+    done
+
+    if [ "$reset_node" = true ]; then
+        check_root
+        full_reset_node "$dry_run"
+        return $?
+    fi
+
+    show_cli_help
+    return 2
+}
+
 main() {
     check_root
     
@@ -7956,58 +8513,18 @@ main() {
         echo -e "${CYAN}[i] paqet core:${NC} ${core_ver}"
         echo -e "${CYAN}[i] core provider:${NC} $(get_core_provider_label "$header_core_provider") | ${CYAN}profile:${NC} ${header_profile_preset}"
         echo ""
-        
-        echo -e "${YELLOW}Select option:${NC}"
-        echo ""
-        echo -e "  ${GREEN}── Setup ──${NC}"
-        echo -e "  ${CYAN}1)${NC} Setup Server B (Abroad - VPN server)"
-        echo -e "  ${CYAN}2)${NC} Setup Server A (Iran - entry point)"
-        echo ""
-        echo -e "  ${GREEN}── Management ──${NC}"
-        echo -e "  ${CYAN}3)${NC} Check Status"
-        echo -e "  ${CYAN}4)${NC} View Configuration"
-        echo -e "  ${CYAN}5)${NC} Edit Configuration"
-        echo -e "  ${CYAN}6)${NC} Manage Tunnels (add/remove/restart)"
-        echo -e "  ${CYAN}7)${NC} Test Connection"
-        echo -e "  ${CYAN}h)${NC} Internal Health Check"
-        echo ""
-        echo -e "  ${GREEN}── Maintenance ──${NC}"
-        echo -e "  ${CYAN}8)${NC} Updates / Core / Profiles"
-        echo -e "  ${CYAN}a)${NC} Automatic Reset (scheduled restart)"
-        echo -e "  ${CYAN}d)${NC} Connection Protection & MTU Tuning (fix fake RST/disconnects)"
-        echo -e "  ${CYAN}f)${NC} IPTables Port Forwarding (relay/NAT)"
-        echo -e "  ${CYAN}m)${NC} Import existing installation / migrate old /opt/paqet"
-        echo -e "  ${CYAN}x)${NC} Safe Diagnostics (services, ports, binaries, configs)"
-        echo -e "  ${CYAN}u)${NC} Uninstall"
-        echo ""
-        echo -e "  ${GREEN}── Script ──${NC}"
-        if ! is_command_installed; then
-            echo -e "  ${CYAN}i)${NC} Install as 'recoba-paqet-tunnel' command"
-        fi
-        echo -e "  ${CYAN}r)${NC} Remove recoba-paqet-tunnel command"
-        echo -e "  ${CYAN}0)${NC} Exit"
+
+        render_main_menu
         echo ""
         read -r -p "Choice: " choice < /dev/tty
         
         case $choice in
-            1) install_dependencies; setup_server_b ;;
-            2) run_iran_optimizations; install_dependencies; setup_server_a ;;
-            3) check_status ;;
-            4) view_config ;;
-            5) edit_config ;;
-            6) manage_tunnels_menu ;;
-            7) test_connection ;;
-            8) updates_menu ;;
-            [Hh]) health_check_menu ;;
-            [Bb]) update_paqet_core ;;
-            [Aa]) auto_reset_menu ;;
-            [Dd]) apply_connection_protection ;;
-            [Ff]) iptables_port_forwarding_menu ;;
-            [Uu]) uninstall ;;
-            [Ii]) install_command ;;
-            [Mm]) import_existing_installation_menu ;;
-            [Xx]) diagnostics_menu ;;
-            [Rr]) uninstall_command ;;
+            1) status_diagnostics_menu ;;
+            2) setup_add_tunnel_menu ;;
+            3) manage_existing_tunnels_menu ;;
+            4) core_update_menu ;;
+            5) backup_restore_menu ;;
+            6) full_reset_menu ;;
             0) exit 0 ;;
             *) print_error "Invalid choice" ;;
         esac
@@ -8019,5 +8536,9 @@ main() {
 }
 
 if [[ "${PAQET_TEST_MODE:-0}" != "1" ]]; then
-    main "$@"
+    if [ "$#" -gt 0 ]; then
+        handle_cli_args "$@"
+    else
+        main
+    fi
 fi

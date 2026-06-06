@@ -4,7 +4,7 @@
 #  Builds amd64 and arm64 binaries from ./core for GitHub Releases.
 #
 #  Usage: bash scripts/build_release.sh [version]
-#     eg: bash scripts/build_release.sh v2.1.7
+#     eg: bash scripts/build_release.sh v2.1.8
 #
 #  Prerequisites:
 #    - Docker (all builds use golang:1.26 images with CGo + libpcap)
@@ -17,7 +17,7 @@
 
 set -euo pipefail
 
-VERSION="${1:-v2.1.7}"
+VERSION="${1:-v2.1.8}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="$PROJECT_DIR/build"
