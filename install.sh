@@ -1,9 +1,9 @@
 #!/bin/bash
 #===============================================================================
-#  Recoba Tunnel — Raw Packet Tunnel Installer & Manager
+#  Recoba Paqet Tunnel — Raw Packet Tunnel Installer & Manager
 #  Optimised for Iran entry → abroad exit paths with ENOBUFS recovery.
 #
-#  Usage: bash <(curl -fsSL https://raw.githubusercontent.com/Recoba86/recoba-tunnel/main/install.sh)
+#  Usage: bash <(curl -fsSL https://raw.githubusercontent.com/Recoba86/recoba-paqet-tunnel/main/install.sh)
 #
 #  This project is based on the open-source Paqet core and has been
 #  independently modified and optimised for production tunnel stability.
@@ -12,22 +12,22 @@
 set -e
 
 # --- Project Identity ---
-PROJECT_NAME="Recoba Tunnel"
+PROJECT_NAME="Recoba Paqet Tunnel"
 INSTALLER_VERSION="2.0.0"
-GITHUB_REPO="Recoba86/recoba-tunnel"
+GITHUB_REPO="Recoba86/recoba-paqet-tunnel"
 INSTALLER_REPO="$GITHUB_REPO"
 RELEASE_TAG="v2.1.2"
-INSTALLER_CMD="/usr/local/bin/recoba-tunnel"
+INSTALLER_CMD="/usr/local/bin/recoba-paqet-tunnel"
 
 # --- Paths ---
-PAQET_DIR="/opt/recoba-tunnel"
+PAQET_DIR="/opt/recoba-paqet-tunnel"
 PAQET_CONFIG="$PAQET_DIR/config.yaml"
-PAQET_BIN="$PAQET_DIR/recoba-tunnel"
-PAQET_SERVICE="recoba-tunnel"
+PAQET_BIN="$PAQET_DIR/recoba-paqet-tunnel"
+PAQET_SERVICE="recoba-paqet-tunnel"
 AUTO_RESET_CONF="$PAQET_DIR/auto-reset.conf"
 AUTO_RESET_SCRIPT="$PAQET_DIR/auto-reset.sh"
-AUTO_RESET_SERVICE="recoba-tunnel-auto-reset"
-AUTO_RESET_TIMER="recoba-tunnel-auto-reset"
+AUTO_RESET_SERVICE="recoba-paqet-tunnel-auto-reset"
+AUTO_RESET_TIMER="recoba-paqet-tunnel-auto-reset"
 CORE_META="$PAQET_DIR/core-metadata.env"
 CORE_CACHE_DIR="$PAQET_DIR/core-cache"
 CORE_CACHE_ARCHIVE_DIR="$CORE_CACHE_DIR/archives"
@@ -55,7 +55,7 @@ OPTIMIZED_KCP_PSHARD="0"
 OPTIMIZED_IFACE_MTU="1492"
 OPTIMIZED_TXQUEUELEN="4000"
 OPTIMIZED_FQ_FLOW_LIMIT="500"
-OPTIMIZE_SYSCTL_FILE="/etc/sysctl.d/99-recoba-tunnel.conf"
+OPTIMIZE_SYSCTL_FILE="/etc/sysctl.d/99-recoba-paqet-tunnel.conf"
 
 # Colors
 RED='\033[0;31m'
@@ -254,7 +254,7 @@ set_installed_core_metadata() {
 
     ensure_paqet_dir_permissions
     cat > "$CORE_META" << EOF
-# recoba-tunnel installed core metadata
+# recoba-paqet-tunnel installed core metadata
 CORE_PROVIDER="$(env_quote_value "$provider")"
 CORE_VERSION="$(env_quote_value "$version")"
 CORE_ARCHIVE="$(env_quote_value "$archive_name")"
@@ -299,7 +299,7 @@ set_current_profile_preset() {
     local preset="$1"
     ensure_paqet_dir_permissions
     cat > "$CORE_PROFILE_META" << EOF
-# recoba-tunnel profile preset metadata
+# recoba-paqet-tunnel profile preset metadata
 CORE_META_UPDATED_AT="$(date -Iseconds 2>/dev/null || date)"
 EOF
     secure_file_permissions "$CORE_META" 600
@@ -351,7 +351,7 @@ set_current_profile_preset() {
     local preset="$1"
     ensure_paqet_dir_permissions
     cat > "$CORE_PROFILE_META" << EOF
-# recoba-tunnel profile preset metadata
+# recoba-paqet-tunnel profile preset metadata
 CORE_PROFILE_PRESET="${preset}"
 UPDATED_AT="$(date -Iseconds 2>/dev/null || date)"
 EOF
@@ -1894,7 +1894,7 @@ resolve_recoba_core_asset() {
             ;;
     esac
 
-    # Match: recoba-tunnel-linux-<arch>.tar.gz
+    # Match: recoba-paqet-tunnel-linux-<arch>.tar.gz
     local asset_pair=""
     asset_pair=$(printf '%s\n' "$api_json" | awk -v target_arch="$arch" '
         BEGIN { current_name="" }
@@ -1908,7 +1908,7 @@ resolve_recoba_core_asset() {
             line=$0
             sub(/^.*"browser_download_url"[[:space:]]*:[[:space:]]*"/, "", line)
             sub(/".*$/, "", line)
-            if (current_name ~ /recoba-tunnel/ && current_name ~ /tar\.gz/ && current_name ~ target_arch) {
+            if (current_name ~ /recoba-paqet-tunnel/ && current_name ~ /tar\.gz/ && current_name ~ target_arch) {
                 print current_name "|" line
                 exit
             }
@@ -3422,8 +3422,8 @@ download_recoba_core() {
     local arch
     arch=$(detect_arch)
     
-    local base_url="https://github.com/Recoba86/recoba-tunnel/releases/download/${target_version}"
-    local tarball="recoba-tunnel-linux-${arch}.tar.gz"
+    local base_url="https://github.com/Recoba86/recoba-paqet-tunnel/releases/download/${target_version}"
+    local tarball="recoba-paqet-tunnel-linux-${arch}.tar.gz"
     local checksums="SHA256SUMS"
     
     local temp_dir
@@ -3462,20 +3462,20 @@ download_recoba_core() {
     print_success "Checksum verified successfully."
     
     print_step "Extracting binary..."
-    if ! tar -xzf "${temp_dir}/${tarball}" -C "$temp_dir" recoba-tunnel 2>/dev/null; then
+    if ! tar -xzf "${temp_dir}/${tarball}" -C "$temp_dir" recoba-paqet-tunnel 2>/dev/null; then
         print_error "Failed to extract tarball"
         rm -rf "$temp_dir"
         return 1
     fi
     
-    if [ ! -x "${temp_dir}/recoba-tunnel" ]; then
+    if [ ! -x "${temp_dir}/recoba-paqet-tunnel" ]; then
         print_error "Extracted binary not found or not executable"
         rm -rf "$temp_dir"
         return 1
     fi
     
     local ext_ver
-    ext_ver=$("${temp_dir}/recoba-tunnel" version 2>/dev/null | grep -i version || true)
+    ext_ver=$("${temp_dir}/recoba-paqet-tunnel" version 2>/dev/null | grep -i version || true)
     if [ -n "$ext_ver" ]; then
         print_info "Extracted: $ext_ver"
     fi
@@ -3487,7 +3487,7 @@ download_recoba_core() {
 
 safe_update_core() {
     print_banner
-    echo -e "${YELLOW}Safe Auto-Update: Recoba Tunnel Core${NC}"
+    echo -e "${YELLOW}Safe Auto-Update: Recoba Paqet Tunnel Core${NC}"
     echo ""
     
     local installed_ver
@@ -3508,7 +3508,7 @@ safe_update_core() {
     if [ -z "$active_binary" ] || [ ! -f "$active_binary" ]; then
         active_binary="/opt/paqet/paqet" # fallback
         if [ ! -f "$active_binary" ]; then
-            active_binary="/opt/recoba-tunnel/recoba-tunnel"
+            active_binary="/opt/recoba-paqet-tunnel/recoba-paqet-tunnel"
         fi
     fi
     
@@ -3517,7 +3517,7 @@ safe_update_core() {
     
     print_step "Querying latest release from GitHub..."
     local release_info
-    release_info=$(curl -s --max-time 10 "https://api.github.com/repos/Recoba86/recoba-tunnel/releases/latest" 2>/dev/null)
+    release_info=$(curl -s --max-time 10 "https://api.github.com/repos/Recoba86/recoba-paqet-tunnel/releases/latest" 2>/dev/null)
     local latest_tag
     latest_tag=$(echo "$release_info" | grep '"tag_name"' | sed -E 's/.*"v?([^"]+)".*/\1/')
     
@@ -3564,7 +3564,7 @@ safe_update_core() {
         return 1
     fi
     
-    local new_binary="${temp_dir}/recoba-tunnel"
+    local new_binary="${temp_dir}/recoba-paqet-tunnel"
     
     print_step "Backing up current binary..."
     local timestamp
@@ -5112,7 +5112,7 @@ fi
 for svc in /etc/systemd/system/paqet*.service; do
     [ -f "$svc" ] || continue
     name=$(basename "$svc" .service)
-    [ "$name" = "recoba-tunnel-auto-reset" ] && continue
+    [ "$name" = "recoba-paqet-tunnel-auto-reset" ] && continue
     systemctl restart "$name" 2>/dev/null || true
 done
 RESET_SCRIPT
@@ -6623,7 +6623,7 @@ update_installer() {
             if is_command_installed; then
                 cp "$temp_script" "$INSTALLER_CMD"
                 chmod +x "$INSTALLER_CMD"
-                print_success "Updated recoba-tunnel command at $INSTALLER_CMD"
+                print_success "Updated recoba-paqet-tunnel command at $INSTALLER_CMD"
             fi
             
             echo ""
@@ -6743,7 +6743,7 @@ show_port_config() {
 #===============================================================================
 
 install_command() {
-    print_step "Installing recoba-tunnel command..."
+    print_step "Installing recoba-paqet-tunnel command..."
 
     # Download latest script from GitHub
     local temp_script
@@ -6753,7 +6753,7 @@ install_command() {
     if is_dry_run; then
         dry_run_notice "would download installer command from: $download_url"
         dry_run_notice "would install command to: $INSTALLER_CMD"
-        print_success "DRY-RUN: recoba-tunnel command not installed"
+        print_success "DRY-RUN: recoba-paqet-tunnel command not installed"
         return 0
     fi
     
@@ -6767,7 +6767,7 @@ install_command() {
     if curl -fsSL "$download_url" -o "$temp_script" 2>/dev/null; then
         chmod +x "$temp_script"
         mv "$temp_script" "$INSTALLER_CMD"
-        print_success "recoba-tunnel command installed successfully!"
+        print_success "recoba-paqet-tunnel command installed successfully!"
     else
         # If download fails, copy current script
         print_warning "Could not download latest version, installing current script..."
@@ -6777,7 +6777,7 @@ install_command() {
         if [ -f "$current_script" ]; then
             cp "$current_script" "$INSTALLER_CMD"
             chmod +x "$INSTALLER_CMD"
-            print_success "recoba-tunnel command installed from local script!"
+            print_success "recoba-paqet-tunnel command installed from local script!"
         else
             # If running from curl pipe, save from stdin
             print_info "Saving script from current execution..."
@@ -6785,7 +6785,7 @@ install_command() {
             if [ -f "$0" ]; then
                 cp "$0" "$INSTALLER_CMD"
                 chmod +x "$INSTALLER_CMD"
-                print_success "recoba-tunnel command installed!"
+                print_success "recoba-paqet-tunnel command installed!"
             else
                 print_error "Could not determine script source"
                 print_info "Please run: curl -fsSL $download_url -o $INSTALLER_CMD && chmod +x $INSTALLER_CMD"
@@ -6796,7 +6796,7 @@ install_command() {
     
     echo ""
     echo -e "${GREEN}════════════════════════════════════════════════════════════${NC}"
-    echo -e "${GREEN}         recoba-tunnel command installed!                    ${NC}"
+    echo -e "${GREEN}         recoba-paqet-tunnel command installed!                    ${NC}"
     echo -e "${GREEN}════════════════════════════════════════════════════════════${NC}"
     echo ""
     echo -e "  You can now run: ${CYAN}paqet-tunnel${NC}"
@@ -6808,9 +6808,9 @@ install_command() {
 uninstall_command() {
     if [ -f "$INSTALLER_CMD" ]; then
         rm -f "$INSTALLER_CMD"
-        print_success "recoba-tunnel command removed from $INSTALLER_CMD"
+        print_success "recoba-paqet-tunnel command removed from $INSTALLER_CMD"
     else
-        print_info "recoba-tunnel command is not installed"
+        print_info "recoba-paqet-tunnel command is not installed"
     fi
 }
 
@@ -7321,7 +7321,7 @@ benchmark_menu() {
 }
 
 #===============================================================================
-# Migration from old Paqet Manager (/opt/paqet → /opt/recoba-tunnel)
+# Migration from old Paqet Manager (/opt/paqet → /opt/recoba-paqet-tunnel)
 #===============================================================================
 
 migrate_old_paqet_install() {
@@ -7363,8 +7363,8 @@ migrate_old_paqet_install() {
             name=$(basename "$cfg" .yaml | sed 's/^config-//; s/^config$/default/')
             local new_config="$PAQET_DIR/config-${name}.yaml"
             local old_service="paqet-${name}"
-            local new_service="recoba-tunnel-${name}"
-            [ "$name" = "default" ] && old_service="paqet" && new_service="recoba-tunnel"
+            local new_service="recoba-paqet-tunnel-${name}"
+            [ "$name" = "default" ] && old_service="paqet" && new_service="recoba-paqet-tunnel"
 
             echo ""
             echo -e "  ${CYAN}Tunnel: ${name}${NC}"
@@ -7401,8 +7401,8 @@ migrate_old_paqet_install() {
         name=$(basename "$cfg" .yaml | sed 's/^config-//; s/^config$/default/')
         local new_config="$PAQET_DIR/config-${name}.yaml"
         local old_service="paqet-${name}"
-        local new_service="recoba-tunnel-${name}"
-        [ "$name" = "default" ] && old_service="paqet" && new_service="recoba-tunnel" && new_config="$PAQET_DIR/config.yaml"
+        local new_service="recoba-paqet-tunnel-${name}"
+        [ "$name" = "default" ] && old_service="paqet" && new_service="recoba-paqet-tunnel" && new_config="$PAQET_DIR/config.yaml"
 
         # Backup old config
         local backup_cfg="${cfg}.migrated.bak.${ts}"
@@ -7468,11 +7468,11 @@ EOF
     echo -e "${YELLOW}Next steps:${NC}"
     echo -e "  1. Review migrated configs in ${CYAN}${PAQET_DIR}${NC}"
     echo -e "  2. Stop old services: ${CYAN}sudo systemctl stop paqet paqet-*${NC}"
-    echo -e "  3. Start new services: ${CYAN}sudo systemctl start recoba-tunnel recoba-tunnel-*${NC}"
-    echo -e "  4. Verify: ${CYAN}recoba-tunnel → 3) Check Status${NC}"
+    echo -e "  3. Start new services: ${CYAN}sudo systemctl start recoba-paqet-tunnel recoba-paqet-tunnel-*${NC}"
+    echo -e "  4. Verify: ${CYAN}recoba-paqet-tunnel → 3) Check Status${NC}"
     echo ""
     echo -e "${YELLOW}Rollback:${NC}"
-    echo -e "  ${CYAN}sudo systemctl stop recoba-tunnel recoba-tunnel-*${NC}"
+    echo -e "  ${CYAN}sudo systemctl stop recoba-paqet-tunnel recoba-paqet-tunnel-*${NC}"
     echo -e "  ${CYAN}sudo systemctl start paqet paqet-*${NC}"
     echo -e "  (Old install is untouched at ${old_dir})"
     echo ""
@@ -7487,7 +7487,7 @@ EOF
 main() {
     check_root
     
-    # Auto-sync: if recoba-tunnel command exists but is outdated, update it silently
+    # Auto-sync: if recoba-paqet-tunnel command exists but is outdated, update it silently
     if is_command_installed; then
         local installed_ver
         installed_ver=$(grep '^INSTALLER_VERSION=' "$INSTALLER_CMD" 2>/dev/null | cut -d'"' -f2)
@@ -7505,7 +7505,7 @@ main() {
         
         # Show if command is installed
         if is_command_installed; then
-            echo -e "${GREEN}[✓] recoba-tunnel command is installed. Run: ${CYAN}paqet-tunnel${NC}"
+            echo -e "${GREEN}[✓] recoba-paqet-tunnel command is installed. Run: ${CYAN}paqet-tunnel${NC}"
         else
             echo -e "${YELLOW}[i] Tip: Install as command with option 'i' to run: ${CYAN}paqet-tunnel${NC}"
         fi
@@ -7540,14 +7540,14 @@ main() {
         echo -e "  ${CYAN}a)${NC} Automatic Reset (scheduled restart)"
         echo -e "  ${CYAN}d)${NC} Connection Protection & MTU Tuning (fix fake RST/disconnects)"
         echo -e "  ${CYAN}f)${NC} IPTables Port Forwarding (relay/NAT)"
-        echo -e "  ${CYAN}m)${NC} Migrate from old /opt/paqet (Paqet Manager → Recoba Tunnel)"
+        echo -e "  ${CYAN}m)${NC} Migrate from old /opt/paqet (Paqet Manager → Recoba Paqet Tunnel)"
         echo -e "  ${CYAN}u)${NC} Uninstall"
         echo ""
         echo -e "  ${GREEN}── Script ──${NC}"
         if ! is_command_installed; then
-            echo -e "  ${CYAN}i)${NC} Install as 'recoba-tunnel' command"
+            echo -e "  ${CYAN}i)${NC} Install as 'recoba-paqet-tunnel' command"
         fi
-        echo -e "  ${CYAN}r)${NC} Remove recoba-tunnel command"
+        echo -e "  ${CYAN}r)${NC} Remove recoba-paqet-tunnel command"
         echo -e "  ${CYAN}0)${NC} Exit"
         echo ""
         read -r -p "Choice: " choice < /dev/tty

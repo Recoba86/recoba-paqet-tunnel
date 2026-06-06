@@ -1,4 +1,4 @@
-# Recoba Tunnel
+# Recoba Paqet Tunnel
 
 Raw Packet Tunnel Installer & Manager — optimised for Iran entry → abroad exit paths with ENOBUFS recovery.
 
@@ -7,7 +7,7 @@ This project is based on the open-source [Paqet](https://github.com/hanselime/pa
 ## One-Click Install
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Recoba86/recoba-tunnel/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/Recoba86/recoba-paqet-tunnel/main/install.sh)
 ```
 
 ## What It Does
@@ -27,9 +27,9 @@ Client (Passwall/Mobile)
     │
     ▼
 Server A (Iran LAN: 192.168.10.159)
-    ├─ recoba-tunnel-dubai.service   → port 1090 → Dubai Server B
-    ├─ recoba-tunnel-switzerland.service → port 1091 → Swiss Server B
-    └─ recoba-tunnel-germany.service → port 1092 → German Server B
+    ├─ recoba-paqet-tunnel-dubai.service   → port 1090 → Dubai Server B
+    ├─ recoba-paqet-tunnel-switzerland.service → port 1091 → Swiss Server B
+    └─ recoba-paqet-tunnel-germany.service → port 1092 → German Server B
 ```
 
 ## Quick Start
@@ -44,12 +44,12 @@ Server A (Iran LAN: 192.168.10.159)
 Add more exit locations without breaking existing ones:
 
 ```bash
-recoba-tunnel  →  2) Setup Server A  →  name: switzerland  →  ports: 1091
+recoba-paqet-tunnel  →  2) Setup Server A  →  name: switzerland  →  ports: 1091
 ```
 
 Each tunnel gets:
-- `/opt/recoba-tunnel/config-<name>.yaml`
-- `recoba-tunnel-<name>.service`
+- `/opt/recoba-paqet-tunnel/config-<name>.yaml`
+- `recoba-paqet-tunnel-<name>.service`
 - Independent status, logs, restart, and port management
 
 ## Passwall / Client Settings
@@ -67,7 +67,7 @@ Recommended:
 If you have an existing install at `/opt/paqet/`:
 
 ```bash
-recoba-tunnel  →  m) Migrate from old /opt/paqet
+recoba-paqet-tunnel  →  m) Migrate from old /opt/paqet
 ```
 
 This copies configs, creates new service units, and installs the enhanced core — without deleting or stopping your old setup.
@@ -76,7 +76,7 @@ This copies configs, creates new service units, and installs the enhanced core �
 
 ```bash
 # Check ENOBUFS/retry metrics
-journalctl -u recoba-tunnel --no-pager -n 100 | grep -E 'raw_packet|tcp_write|ENOBUFS|retry'
+journalctl -u recoba-paqet-tunnel --no-pager -n 100 | grep -E 'raw_packet|tcp_write|ENOBUFS|retry'
 
 # Live throughput
 iftop -i <interface>
@@ -85,8 +85,8 @@ iftop -i <interface>
 ## Rollback
 
 ```bash
-sudo cp /opt/recoba-tunnel/recoba-tunnel.v1.bak /opt/recoba-tunnel/recoba-tunnel
-sudo systemctl restart recoba-tunnel
+sudo cp /opt/recoba-paqet-tunnel/recoba-paqet-tunnel.v1.bak /opt/recoba-paqet-tunnel/recoba-paqet-tunnel
+sudo systemctl restart recoba-paqet-tunnel
 ```
 
 ## Production Profile Defaults
@@ -112,4 +112,4 @@ This project is based on the open-source Paqet core. See [LICENSE](LICENSE) for 
 
 ## Repository
 
-https://github.com/Recoba86/recoba-tunnel
+https://github.com/Recoba86/recoba-paqet-tunnel

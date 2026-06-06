@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to Recoba Tunnel are documented in this file.
+All notable changes to Recoba Paqet Tunnel are documented in this file.
 
 ## v2.1.0 — 2026-05-29
 

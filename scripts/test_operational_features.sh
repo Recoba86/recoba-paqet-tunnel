@@ -50,8 +50,8 @@ systemctl() {
     if [ "$cmd" = "cat" ]; then
         if [ "$svc" = "paqet-dubai.service" ]; then
             echo "ExecStart=/opt/paqet/paqet -c /opt/paqet/config.yaml"
-        elif [ "$svc" = "recoba-tunnel-dubai.service" ]; then
-            echo "ExecStart=/opt/recoba-tunnel/recoba-tunnel -c /opt/recoba-tunnel/config-dubai.yaml"
+        elif [ "$svc" = "recoba-paqet-tunnel-dubai.service" ]; then
+            echo "ExecStart=/opt/recoba-paqet-tunnel/recoba-paqet-tunnel -c /opt/recoba-paqet-tunnel/config-dubai.yaml"
         else
             return 1
         fi
@@ -62,14 +62,14 @@ systemctl() {
 export -f systemctl
 
 assert_eq "/opt/paqet/paqet" "$(get_active_binary_path "paqet-dubai.service")" "legacy binary path parsed correctly"
-assert_eq "/opt/recoba-tunnel/recoba-tunnel" "$(get_active_binary_path "recoba-tunnel-dubai.service")" "standalone binary path parsed correctly"
+assert_eq "/opt/recoba-paqet-tunnel/recoba-paqet-tunnel" "$(get_active_binary_path "recoba-paqet-tunnel-dubai.service")" "standalone binary path parsed correctly"
 
 # ---------------------------------------------------------
 # Test: Health Check Classification
 # ---------------------------------------------------------
 mkdir -p "$tmp_dir/opt"
-touch "$tmp_dir/opt/recoba-tunnel"
-chmod +x "$tmp_dir/opt/recoba-tunnel"
+touch "$tmp_dir/opt/recoba-paqet-tunnel"
+chmod +x "$tmp_dir/opt/recoba-paqet-tunnel"
 
 # Mock system commands for health check
 systemctl() {
@@ -86,7 +86,7 @@ systemctl() {
         if [[ "$svc" == *"missing_bin"* ]]; then
             echo "ExecStart=/does/not/exist/bin"
         else
-            echo "ExecStart=$tmp_dir/opt/recoba-tunnel"
+            echo "ExecStart=$tmp_dir/opt/recoba-paqet-tunnel"
         fi
     fi
 }
@@ -118,7 +118,7 @@ export -f journalctl
 
 # Mock ss to pretend ports are open
 ss() {
-    echo "LISTEN 0 128 0.0.0.0:1090 0.0.0.0:* users:((\"recoba-tunnel\",pid=1234,fd=3))"
+    echo "LISTEN 0 128 0.0.0.0:1090 0.0.0.0:* users:((\"recoba-paqet-tunnel\",pid=1234,fd=3))"
 }
 export -f ss
 
@@ -177,7 +177,7 @@ curl() {
         echo '{"tag_name": "v'$MOCK_LATEST'"}'
     elif [[ "$*" == *"SHA256SUMS"* ]]; then
         if [ "$MOCK_DL" = "fail_sha256" ]; then return 1; fi
-        echo "valid_hash recoba-tunnel-linux-amd64.tar.gz" > "$4"
+        echo "valid_hash recoba-paqet-tunnel-linux-amd64.tar.gz" > "$4"
     elif [[ "$*" == *".tar.gz"* ]]; then
         if [ "$MOCK_DL" = "fail_asset" ]; then return 1; fi
         touch "$4"
@@ -194,8 +194,8 @@ download_recoba_core() {
     
     local d="$tmp_dir/dl"
     mkdir -p "$d"
-    touch "$d/recoba-tunnel"
-    chmod +x "$d/recoba-tunnel"
+    touch "$d/recoba-paqet-tunnel"
+    chmod +x "$d/recoba-paqet-tunnel"
     echo "$d"
 }
 export -f download_recoba_core
@@ -335,7 +335,7 @@ systemctl() {
     elif [ "$cmd" = "is-active" ]; then
         return 0
     elif [ "$cmd" = "cat" ]; then
-        echo "ExecStart=$tmp_dir/opt/recoba-tunnel"
+        echo "ExecStart=$tmp_dir/opt/recoba-paqet-tunnel"
         return 0
     fi
 }
@@ -376,7 +376,7 @@ export -f journalctl
 
 # Redefine ss mock to bound port 1090
 ss() {
-    echo "LISTEN 0 128 0.0.0.0:1090 0.0.0.0:* users:((\"recoba-tunnel\",pid=2222,fd=3))"
+    echo "LISTEN 0 128 0.0.0.0:1090 0.0.0.0:* users:((\"recoba-paqet-tunnel\",pid=2222,fd=3))"
 }
 export -f ss
 
