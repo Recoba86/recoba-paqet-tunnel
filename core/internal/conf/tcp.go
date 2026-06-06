@@ -17,10 +17,10 @@ type TCPF struct {
 
 func (t *TCP) setDefaults() {
 	if len(t.LF_) == 0 {
-		t.LF_ = []string{"PA"}
+		t.LF_ = []string{"S", "A", "PA"}
 	}
 	if len(t.RF_) == 0 {
-		t.RF_ = []string{"PA"}
+		t.RF_ = []string{"SA", "PA"}
 	}
 }
 

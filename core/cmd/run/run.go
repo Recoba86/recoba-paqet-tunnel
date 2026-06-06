@@ -26,6 +26,8 @@ var Cmd = &cobra.Command{
 		}
 		initialize(cfg)
 
+		flog.Warnf("WARNING: v2.1.10 introduces a backward-incompatible protocol change (gob -> length-prefixed JSON). Both server and client must run v2.1.10 or newer.")
+
 		switch cfg.Role {
 		case "client":
 			startClient(cfg)
