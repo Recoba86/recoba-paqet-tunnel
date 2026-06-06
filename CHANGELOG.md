@@ -2,6 +2,36 @@
 
 All notable changes to Recoba Paqet Tunnel are documented in this file.
 
+## v2.1.5 — 2026-06-06
+
+### Release Metadata
+
+- Enforced clean tagged release builds so published binaries carry the expected tag and commit metadata.
+
+## v2.1.4 — 2026-06-06
+
+### Reliability
+
+- Tuned TCP write retry limits for reliability-first tunnel behavior under backpressure.
+
+## v2.1.3 — 2026-06-06
+
+### Health Checks
+
+- Fixed client forward-list port extraction so health checks report missing bound ports accurately.
+
+## v2.1.2 — 2026-06-06
+
+### Health Checks
+
+- Added time-aware runtime health scoping with boot and log-tail fallbacks for more accurate tunnel status.
+
+## v2.1.1 — 2026-06-06
+
+### Updates
+
+- Added robust version extraction and structured backup names for safe core updates.
+
 ## v2.1.0 — 2026-05-29
 
 ### Operational Features

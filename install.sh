@@ -16,7 +16,7 @@ PROJECT_NAME="Recoba Paqet Tunnel"
 INSTALLER_VERSION="2.0.0"
 GITHUB_REPO="Recoba86/recoba-paqet-tunnel"
 INSTALLER_REPO="$GITHUB_REPO"
-RELEASE_TAG="v2.1.2"
+RELEASE_TAG="v2.1.5"
 INSTALLER_CMD="/usr/local/bin/recoba-paqet-tunnel"
 
 # --- Paths ---
@@ -6558,10 +6558,6 @@ check_for_updates() {
     
     # Compare versions (simple string comparison)
     if [ "$INSTALLER_VERSION" = "$latest_version" ]; then
-        echo ""
-        echo -e "${YELLOW}Check out my latest tunnel project (SMTP-based):${NC}"
-        echo -e "  ${CYAN}https://github.com/g3ntrix/smtp-tunnel${NC}"
-        echo ""
         print_success "You are running the latest version!"
         return 0
     fi
@@ -6626,10 +6622,6 @@ update_installer() {
                 print_success "Updated recoba-paqet-tunnel command at $INSTALLER_CMD"
             fi
             
-            echo ""
-            echo -e "${YELLOW}Check out my latest tunnel project (SMTP-based):${NC}"
-            echo -e "  ${CYAN}https://github.com/g3ntrix/smtp-tunnel${NC}"
-            echo ""
             print_step "Launching updated installer..."
             echo ""
             

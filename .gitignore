@@ -2,3 +2,23 @@ build/
 *.tar.gz
 SHA256SUMS
 .DS_Store
+
+# Server configurations
+.local/
+*.pem
+*.key
+*.env
+*.env.*
+!*.env.example
+
+# Local benchmark and temporary output
+scripts/stats_*.txt
+scripts/*stats*.txt
+scripts/config-*-final.yaml
+scripts/config-*-test.yaml
+scripts/config-test.yaml
+scripts/phase*.sh
+iperf3_res.txt
+benchmark-output/
+benchmarks/tmp/
+tmp/

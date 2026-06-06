@@ -1,113 +1,146 @@
 # Recoba Paqet Tunnel
 
-Raw Packet Tunnel Installer & Manager — optimised for Iran entry → abroad exit paths with ENOBUFS recovery.
+Raw packet tunnel installer and manager for Server A entry nodes and abroad exit servers, with Recoba-enhanced Paqet core builds focused on production tunnel stability.
 
-This project is based on the open-source [Paqet](https://github.com/hanselime/paqet) core and has been independently modified and optimised for production tunnel stability.
+This project is based on the open-source [Paqet](https://github.com/hanselime/paqet) core and has been independently modified for ENOBUFS recovery, split metrics, TCP write retry backoff, health checks, and safe core updates.
+
+## Repository and Version
+
+- GitHub: https://github.com/Recoba86/recoba-paqet-tunnel
+- Latest local tag: `v2.1.5`
+- Default installer release tag: `v2.1.5`
 
 ## One-Click Install
+
+Run this on both Server A and each exit server:
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/Recoba86/recoba-paqet-tunnel/main/install.sh)
 ```
 
-## What It Does
+## Roles
 
-- Installs the **Recoba Enhanced Core** (ENOBUFS recovery, split metrics, TCP write retry backoff)
-- Sets up Server A (Iran entry) or Server B (abroad exit) configurations
-- Supports **multiple simultaneous exit tunnels** (Dubai, Switzerland, Germany, etc.)
-- Applies the **Iran Optimized Profile** (KCP MTU 1300, FEC off, window 1536, mode fast)
-- Auto-tunes interface MTU, txqueuelen, and fq flow_limit for the path
+- Server A client: user-facing entry server. It listens on local public ports and forwards traffic through one or more Paqet tunnels.
+- Exit server: abroad server that receives Paqet tunnel traffic and forwards it to local backend services.
 
-## Architecture
+The installer can run both roles from the same script. Use one Server A with multiple independent exit tunnels when you want multiple locations.
 
+## Install an Exit Server
+
+1. Run the installer.
+2. Select `1) Setup Server B (Abroad - VPN server)`.
+3. Choose the Paqet listen port for this exit server.
+4. Enter the backend service ports that should be reachable through the tunnel.
+5. Save the generated secret key and public endpoint details securely.
+6. Ensure the server firewall allows the chosen Paqet listen port.
+
+Do not commit generated secrets, private keys, or machine-specific configs. Keep those under `.local/` or directly on the server.
+
+## Install Server A
+
+1. Run the installer.
+2. Select `2) Setup Server A`.
+3. Enter a tunnel name such as `dubai` or `germany`.
+4. Enter the exit server public address, Paqet port, and generated secret key.
+5. Enter the user-facing listen ports that should forward to the exit server backend ports.
+6. Repeat the Server A setup for each additional exit location.
+
+Example concept:
+
+```text
+Client traffic
+    |
+    v
+Server A
+    |-- port 1090 -> recoba-paqet-tunnel-dubai.service   -> Dubai exit server
+    |-- port 1091 -> recoba-paqet-tunnel-germany.service -> Germany exit server
 ```
-Client (Passwall/Mobile)
-    │
-    ▼
-Server A (Iran LAN: 192.168.10.159)
-    ├─ recoba-paqet-tunnel-dubai.service   → port 1090 → Dubai Server B
-    ├─ recoba-paqet-tunnel-switzerland.service → port 1091 → Swiss Server B
-    └─ recoba-paqet-tunnel-germany.service → port 1092 → German Server B
+
+Each tunnel gets its own config and systemd service:
+
+```text
+/opt/recoba-paqet-tunnel/config-<name>.yaml
+recoba-paqet-tunnel-<name>.service
 ```
 
-## Quick Start
+## Multi-Location Support
 
-1. Run the one-click install command above
-2. Select `2) Setup Server A` — enter tunnel name, Server B IP, and forward ports
-3. On Server B, run the same installer and select `1) Setup Server B`
-4. Configure your client with the printed VLESS URI and Passwall recommendations
+Multi-location support is built around independent named tunnels. A practical setup is Dubai on one user-facing port and Germany on another, both managed from the same Server A. Each location can be restarted, checked, tuned, and edited independently.
 
-## Multi-Location Tunnels
+## Client Settings
 
-Add more exit locations without breaking existing ones:
+Recommended Passwall or raw TCP client settings:
+
+- Mux: off
+- TCP Fast Open: on
+- TLS: off
+- Transport: raw TCP
+- MPTCP: off
+- Pre-connections: `0`
+
+## Useful Commands
 
 ```bash
-recoba-paqet-tunnel  →  2) Setup Server A  →  name: switzerland  →  ports: 1091
+# Open the manager menu
+recoba-paqet-tunnel
+
+# Check service state
+systemctl status 'recoba-paqet-tunnel*' --no-pager
+
+# Inspect tunnel logs
+journalctl -u recoba-paqet-tunnel-<name>.service --no-pager -n 100
+
+# Check ENOBUFS and retry metrics
+journalctl -u recoba-paqet-tunnel-<name>.service --no-pager -n 300 | grep -E 'raw_packet|tcp_write|ENOBUFS|retry'
 ```
 
-Each tunnel gets:
-- `/opt/recoba-paqet-tunnel/config-<name>.yaml`
-- `recoba-paqet-tunnel-<name>.service`
-- Independent status, logs, restart, and port management
+## Local Deployment Helpers
 
-## Passwall / Client Settings
+Use `scripts/check-exit-server.sh` with an untracked environment file:
 
-Recommended:
-- **Mux:** OFF
-- **TCP Fast Open:** ON
-- **TLS:** OFF
-- **Transport:** RAW TCP
-- **MPTCP:** OFF
-- **Pre-connections:** 0
+```bash
+mkdir -p .local
+cat > .local/exit-server.env <<'ENV'
+EXIT_SERVER_HOST=203.0.113.10
+EXIT_SERVER_USER=root
+EXIT_SERVER_PORT=22
+EXIT_SERVER_KEY_FILE=.local/keys/exit-server.key
+ENV
+
+bash scripts/check-exit-server.sh .local/exit-server.env
+```
+
+The `.local/` directory, private key files, environment files, and benchmark output are intentionally ignored by git.
+
+## Configuration Templates
+
+Generic Paqet examples are kept in:
+
+- `core/example/client.yaml.example`
+- `core/example/server.yaml.example`
+
+Use the installer for production configs whenever possible because it validates interfaces, ports, secret keys, and service units.
 
 ## Migration from Old Paqet Manager
 
-If you have an existing install at `/opt/paqet/`:
+If you have an existing install at `/opt/paqet/`, run:
+
+```text
+recoba-paqet-tunnel -> m) Migrate from old /opt/paqet
+```
+
+The migration copies configs, creates Recoba Paqet Tunnel service units, and installs the enhanced core without deleting the old setup.
+
+## Build Release Assets
+
+Release assets are built from clean, tagged commits:
 
 ```bash
-recoba-paqet-tunnel  →  m) Migrate from old /opt/paqet
+bash scripts/build_release.sh v2.1.5
 ```
 
-This copies configs, creates new service units, and installs the enhanced core — without deleting or stopping your old setup.
-
-## Monitoring
-
-```bash
-# Check ENOBUFS/retry metrics
-journalctl -u recoba-paqet-tunnel --no-pager -n 100 | grep -E 'raw_packet|tcp_write|ENOBUFS|retry'
-
-# Live throughput
-iftop -i <interface>
-```
-
-## Rollback
-
-```bash
-sudo cp /opt/recoba-paqet-tunnel/recoba-paqet-tunnel.v1.bak /opt/recoba-paqet-tunnel/recoba-paqet-tunnel
-sudo systemctl restart recoba-paqet-tunnel
-```
-
-## Production Profile Defaults
-
-```yaml
-transport:
-  protocol: "kcp"
-  conn: 2
-  kcp:
-    mode: "fast"
-    mtu: 1300
-    sndwnd: 1536
-    rcvwnd: 1536
-    pshard: 0     # FEC off
-    dshard: 0
-    streambuf: 2097152
-    smuxbuf: 4194304
-```
+The script builds `linux/amd64` and `linux/arm64` tarballs plus `SHA256SUMS` under `build/`.
 
 ## License
 
 This project is based on the open-source Paqet core. See [LICENSE](LICENSE) for details.
-
-## Repository
-
-https://github.com/Recoba86/recoba-paqet-tunnel
