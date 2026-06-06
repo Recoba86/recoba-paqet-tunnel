@@ -13,10 +13,10 @@ set -e
 
 # --- Project Identity ---
 PROJECT_NAME="Recoba Paqet Tunnel"
-INSTALLER_VERSION="2.1.11"
+INSTALLER_VERSION="2.1.12"
 GITHUB_REPO="Recoba86/recoba-paqet-tunnel"
 INSTALLER_REPO="$GITHUB_REPO"
-RELEASE_TAG="v2.1.11"
+RELEASE_TAG="v2.1.12"
 INSTALLER_CMD="/usr/local/bin/recoba-paqet-tunnel"
 
 # --- Paths ---
@@ -7838,6 +7838,61 @@ show_duplicate_discovery_warnings() {
     fi
 }
 
+verify_iptables_protection() {
+    print_banner
+    echo -e "${YELLOW}Verifying iptables connection protection...${NC}"
+    echo ""
+    local found_rules=0
+    
+    if iptables -t raw -S | grep -q "NOTRACK"; then
+        echo -e "  [${GREEN}OK${NC}] Raw NOTRACK rules found"
+        found_rules=$((found_rules+1))
+    else
+        echo -e "  [${RED}MISSING${NC}] Raw NOTRACK rules not found"
+    fi
+    
+    if iptables -t mangle -S | grep -q "RST RST -j DROP"; then
+        echo -e "  [${GREEN}OK${NC}] Mangle RST DROP rules found"
+        found_rules=$((found_rules+1))
+    else
+        echo -e "  [${RED}MISSING${NC}] Mangle RST DROP rules not found"
+    fi
+    
+    echo ""
+    if [ "$found_rules" -eq 2 ]; then
+        print_success "Connection protection is fully active."
+    else
+        print_warning "Connection protection is missing or incomplete."
+        echo "You can reapply it from the diagnostics menu."
+    fi
+}
+
+reapply_iptables_protection() {
+    print_banner
+    echo -e "${YELLOW}Reapplying connection protection...${NC}"
+    
+    if [ -f "$PAQET_CONFIG_PATH/config.yaml" ]; then
+        local role
+        role=$(grep -E "^role:" "$PAQET_CONFIG_PATH/config.yaml" | awk '{print $2}' | tr -d '"')
+        if [ "$role" = "server" ]; then
+            local port
+            port=$(grep -E "addr:" "$PAQET_CONFIG_PATH/config.yaml" | head -n 1 | awk -F: '{print $NF}' | tr -d '"')
+            setup_iptables "$port"
+        else
+            local s_addr
+            s_addr=$(grep -E "addr:" "$PAQET_CONFIG_PATH/config.yaml" | head -n 1 | awk '{print $2}' | tr -d '"')
+            local s_ip
+            s_ip=$(echo "$s_addr" | cut -d: -f1)
+            local s_port
+            s_port=$(echo "$s_addr" | cut -d: -f2)
+            setup_iptables_client "$s_ip" "$s_port"
+        fi
+        print_success "Protection reapplied successfully."
+    else
+        print_error "Could not determine tunnel configuration."
+    fi
+}
+
 status_diagnostics_menu() {
     while true; do
         print_banner
@@ -8650,57 +8705,3 @@ if [[ "${PAQET_TEST_MODE:-0}" != "1" ]]; then
     fi
 fi
 
-verify_iptables_protection() {
-    print_banner
-    echo -e "${YELLOW}Verifying iptables connection protection...${NC}"
-    echo ""
-    local found_rules=0
-    
-    if iptables -t raw -S | grep -q "NOTRACK"; then
-        echo -e "  [${GREEN}OK${NC}] Raw NOTRACK rules found"
-        found_rules=$((found_rules+1))
-    else
-        echo -e "  [${RED}MISSING${NC}] Raw NOTRACK rules not found"
-    fi
-    
-    if iptables -t mangle -S | grep -q "RST RST -j DROP"; then
-        echo -e "  [${GREEN}OK${NC}] Mangle RST DROP rules found"
-        found_rules=$((found_rules+1))
-    else
-        echo -e "  [${RED}MISSING${NC}] Mangle RST DROP rules not found"
-    fi
-    
-    echo ""
-    if [ "$found_rules" -eq 2 ]; then
-        print_success "Connection protection is fully active."
-    else
-        print_warning "Connection protection is missing or incomplete."
-        echo "You can reapply it from the diagnostics menu."
-    fi
-}
-
-reapply_iptables_protection() {
-    print_banner
-    echo -e "${YELLOW}Reapplying connection protection...${NC}"
-    
-    if [ -f "$PAQET_CONFIG_PATH/config.yaml" ]; then
-        local role
-        role=$(grep -E "^role:" "$PAQET_CONFIG_PATH/config.yaml" | awk '{print $2}' | tr -d '"')
-        if [ "$role" = "server" ]; then
-            local port
-            port=$(grep -E "addr:" "$PAQET_CONFIG_PATH/config.yaml" | head -n 1 | awk -F: '{print $NF}' | tr -d '"')
-            setup_iptables "$port"
-        else
-            local s_addr
-            s_addr=$(grep -E "addr:" "$PAQET_CONFIG_PATH/config.yaml" | head -n 1 | awk '{print $2}' | tr -d '"')
-            local s_ip
-            s_ip=$(echo "$s_addr" | cut -d: -f1)
-            local s_port
-            s_port=$(echo "$s_addr" | cut -d: -f2)
-            setup_iptables_client "$s_ip" "$s_port"
-        fi
-        print_success "Protection reapplied successfully."
-    else
-        print_error "Could not determine tunnel configuration."
-    fi
-}
