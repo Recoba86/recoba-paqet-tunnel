@@ -17,9 +17,7 @@ func (s *Server) handleConn(ctx context.Context, conn tnet.Conn) {
 			return
 		default:
 		}
-		flog.Infof("Waiting for AcceptStrm on %s...", conn.RemoteAddr())
 		strm, err := conn.AcceptStrm()
-		flog.Infof("AcceptStrm returned! err=%v", err)
 		if err != nil {
 			flog.Errorf("failed to accept stream on %s: %v", conn.RemoteAddr(), err)
 			return

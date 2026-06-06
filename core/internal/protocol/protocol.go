@@ -7,7 +7,6 @@ import (
 	"io"
 	"paqet/internal/conf"
 	"paqet/internal/tnet"
-	"paqet/internal/flog"
 )
 
 type PType = byte
@@ -27,14 +26,11 @@ type Proto struct {
 }
 
 func (p *Proto) Read(r io.Reader) error {
-	flog.Infof("Proto.Read: waiting for length...")
 	var length uint32
 	err := binary.Read(r, binary.BigEndian, &length)
 	if err != nil {
-		flog.Errorf("Proto.Read: failed to read length: %v", err)
 		return err
 	}
-	flog.Infof("Proto.Read: length is %d", length)
 	if length > 1024*1024 {
 		return fmt.Errorf("protocol payload too large: %d", length)
 	}
@@ -42,10 +38,8 @@ func (p *Proto) Read(r io.Reader) error {
 	data := make([]byte, length)
 	_, err = io.ReadFull(r, data)
 	if err != nil {
-		flog.Errorf("Proto.Read: failed to read data: %v", err)
 		return err
 	}
-	flog.Infof("Proto.Read: read %d bytes: %s", length, string(data))
 
 	return json.Unmarshal(data, p)
 }
@@ -55,7 +49,6 @@ func (p *Proto) Write(w io.Writer) error {
 	if err != nil {
 		return err
 	}
-	flog.Infof("Proto.Write: writing length %d and data: %s", len(data), string(data))
 
 	err = binary.Write(w, binary.BigEndian, uint32(len(data)))
 	if err != nil {
