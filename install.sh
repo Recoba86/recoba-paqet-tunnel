@@ -13,10 +13,10 @@ set -e
 
 # --- Project Identity ---
 PROJECT_NAME="Recoba Paqet Tunnel"
-INSTALLER_VERSION="2.1.9"
+INSTALLER_VERSION="2.1.11"
 GITHUB_REPO="Recoba86/recoba-paqet-tunnel"
 INSTALLER_REPO="$GITHUB_REPO"
-RELEASE_TAG="v2.1.10"
+RELEASE_TAG="v2.1.11"
 INSTALLER_CMD="/usr/local/bin/recoba-paqet-tunnel"
 
 # --- Paths ---
@@ -3791,6 +3791,15 @@ download_recoba_core() {
     fi
     print_success "Checksum verified successfully."
     
+    # Cache the archive
+    local cache_archive
+    cache_archive=$(get_core_archive_cache_path "$target_version" "$tarball")
+    mkdir -p "$(dirname "$cache_archive")" 2>/dev/null || true
+    if cp "${temp_dir}/${tarball}" "$cache_archive" 2>/dev/null; then
+        chmod 600 "$cache_archive" 2>/dev/null || true
+        print_info "Cached core archive: $cache_archive"
+    fi
+
     print_step "Extracting binary..."
     if ! tar -xzf "${temp_dir}/${tarball}" -C "$temp_dir" recoba-paqet-tunnel 2>/dev/null; then
         print_error "Failed to extract tarball"
@@ -3869,8 +3878,30 @@ restart_services_for_binary() {
         [ "$binary" = "$target_binary" ] || continue
         if systemctl restart "$service" >/dev/null 2>&1; then
             print_success "Restarted $service"
+            # Verify the active binary version and running process executable path
+            sleep 1
+            local check_ver=""
+            check_ver=$("$target_binary" version 2>/dev/null || "$target_binary" --version 2>/dev/null | head -n 1 || true)
+            if [ -n "$check_ver" ]; then
+                print_info "  Verified binary version output: $(echo "$check_ver" | head -n 1)"
+            fi
+            local pid=""
+            pid=$(systemctl show -p MainPID "$service" 2>/dev/null | cut -d= -f2)
+            if [ -n "$pid" ] && [ "$pid" -ne 0 ] 2>/dev/null; then
+                local exe=""
+                if [ -L "/proc/$pid/exe" ]; then
+                    exe=$(readlink -f "/proc/$pid/exe" 2>/dev/null)
+                fi
+                if [ "$exe" = "$target_binary" ]; then
+                    print_success "  Verified running process (PID: $pid) executable matches: $exe"
+                else
+                    print_warning "  Warning: running process executable ($exe) does not match target ($target_binary)!"
+                fi
+            else
+                print_warning "  Warning: could not retrieve MainPID for restarted service $service"
+            fi
         else
-            print_warning "Failed to restart $service (check: journalctl -u $service -n 50)"
+            print_warning "  Failed to restart $service (check: journalctl -u $service -n 50)"
         fi
     done <<< "$rows"
 }
@@ -3915,6 +3946,28 @@ ${target}|${backup_path}"
     done <<< "$targets"
 
     UPDATED_CORE_BACKUPS="$backups"
+
+    # Resolve tarball name and cache path for latest_tag to update metadata
+    local arch
+    arch=$(detect_arch)
+    local tarball="recoba-paqet-tunnel-linux-${arch}.tar.gz"
+    local cache_archive
+    cache_archive=$(get_core_archive_cache_path "$latest_tag" "$tarball")
+    local download_url="https://github.com/Recoba86/recoba-paqet-tunnel/releases/download/${latest_tag}/${tarball}"
+    local legacy_tarball="recoba-tunnel-linux-${arch}.tar.gz"
+    local legacy_cache_archive
+    legacy_cache_archive=$(get_core_archive_cache_path "$latest_tag" "$legacy_tarball")
+    if [ ! -f "$cache_archive" ] && [ -f "$legacy_cache_archive" ]; then
+        tarball="$legacy_tarball"
+        cache_archive="$legacy_cache_archive"
+        download_url="https://github.com/Recoba86/recoba-paqet-tunnel/releases/download/${latest_tag}/${tarball}"
+    fi
+
+    # Update metadata using the first target as the primary binary path
+    local primary_target=""
+    primary_target=$(echo "$targets" | head -n 1)
+    [ -z "$primary_target" ] && primary_target="$PAQET_BIN"
+    set_installed_core_metadata "recoba-enhanced" "$latest_tag" "$tarball" "$download_url" "$cache_archive" "download" "$primary_target"
 
     while IFS= read -r target; do
         [ -z "$target" ] && continue
@@ -6509,22 +6562,42 @@ show_core_management_status() {
     echo -e "  ${YELLOW}Core Provider:${NC}  ${CYAN}$(get_core_provider_label "$provider")${NC}"
     echo -e "  ${YELLOW}Core Version:${NC}   ${CYAN}${core_ver}${NC}"
     echo -e "  ${YELLOW}Profile Preset:${NC} ${CYAN}${profile_preset}${NC} ($(get_profile_preset_label "$profile_preset"))"
+    local installed_tag="$core_ver"
+    local is_custom=false
+    if echo "$raw_ver" | grep -Fqi "custom"; then
+        is_custom=true
+    fi
+
+    if [ "$is_custom" = true ]; then
+        echo -e "  ${YELLOW}Installed Source:${NC} ${RED}custom/local build${NC}"
+    else
+        [ -n "$installed_tag" ] && [ "$installed_tag" != "unknown" ] && echo -e "  ${YELLOW}Installed Tag:${NC}  ${CYAN}${installed_tag}${NC}"
+    fi
+    
+    local clean_core="${core_ver#v}"
+    local clean_release="${RELEASE_TAG#v}"
+    if [ "$clean_core" = "$clean_release" ]; then
+        echo -e "  ${YELLOW}Status:${NC}         ${GREEN}up to date${NC}"
+    fi
+
     if [ -f "$CORE_META" ]; then
         local meta_version=""
-        local meta_source=""
-        local meta_archive=""
-        local meta_binary_sha=""
-        local meta_archive_sha=""
         meta_version=$(get_installed_core_meta_field "CORE_VERSION")
-        meta_source=$(get_installed_core_meta_field "CORE_ARCHIVE_SOURCE")
-        meta_archive=$(get_installed_core_meta_field "CORE_ARCHIVE_PATH")
-        meta_binary_sha=$(get_installed_core_meta_field "CORE_BINARY_SHA256")
-        meta_archive_sha=$(get_installed_core_meta_field "CORE_ARCHIVE_SHA256")
-        [ -n "$meta_version" ] && echo -e "  ${YELLOW}Installed Tag:${NC}  ${CYAN}${meta_version}${NC}"
-        [ -n "$meta_source" ] && echo -e "  ${YELLOW}Archive Source:${NC} ${CYAN}${meta_source}${NC}"
-        [ -n "$meta_archive" ] && echo -e "  ${YELLOW}Archive Path:${NC}   ${CYAN}${meta_archive}${NC}"
-        [ -n "$meta_archive_sha" ] && echo -e "  ${YELLOW}Archive SHA256:${NC} ${CYAN}${meta_archive_sha}${NC}"
-        [ -n "$meta_binary_sha" ] && echo -e "  ${YELLOW}Binary SHA256:${NC}  ${CYAN}${meta_binary_sha}${NC}"
+        # Only show the rest of the metadata if it matches the active binary version (not stale)
+        if [ "$installed_tag" = "$meta_version" ]; then
+            local meta_source=""
+            local meta_archive=""
+            local meta_binary_sha=""
+            local meta_archive_sha=""
+            meta_source=$(get_installed_core_meta_field "CORE_ARCHIVE_SOURCE")
+            meta_archive=$(get_installed_core_meta_field "CORE_ARCHIVE_PATH")
+            meta_binary_sha=$(get_installed_core_meta_field "CORE_BINARY_SHA256")
+            meta_archive_sha=$(get_installed_core_meta_field "CORE_ARCHIVE_SHA256")
+            [ -n "$meta_source" ] && echo -e "  ${YELLOW}Archive Source:${NC} ${CYAN}${meta_source}${NC}"
+            [ -n "$meta_archive" ] && echo -e "  ${YELLOW}Archive Path:${NC}   ${CYAN}${meta_archive}${NC}"
+            [ -n "$meta_archive_sha" ] && echo -e "  ${YELLOW}Archive SHA256:${NC} ${CYAN}${meta_archive_sha}${NC}"
+            [ -n "$meta_binary_sha" ] && echo -e "  ${YELLOW}Binary SHA256:${NC}  ${CYAN}${meta_binary_sha}${NC}"
+        fi
     fi
 }
 
