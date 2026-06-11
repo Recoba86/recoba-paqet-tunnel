@@ -15,14 +15,14 @@ type mockStrm struct {
 	id int
 }
 
-func (m *mockStrm) SID() int { return m.id }
-func (m *mockStrm) Close() error { return nil }
+func (m *mockStrm) SID() int                    { return m.id }
+func (m *mockStrm) Close() error                { return nil }
 func (m *mockStrm) Write(b []byte) (int, error) { return len(b), nil }
 
 func TestUDPConcurrencyRace(t *testing.T) {
 	c, _ := New(&conf.Conf{})
 	var streamCounter int32 = 0
-	
+
 	// Mock newStrm
 	c.newStrmOverride = func() (tnet.Strm, error) {
 		time.Sleep(10 * time.Millisecond) // Simulate RTT
@@ -32,7 +32,7 @@ func TestUDPConcurrencyRace(t *testing.T) {
 
 	var wg sync.WaitGroup
 	numRequests := 50
-	
+
 	for i := 0; i < numRequests; i++ {
 		wg.Add(1)
 		go func() {

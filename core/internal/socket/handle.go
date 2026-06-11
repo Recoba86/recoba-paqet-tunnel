@@ -2,7 +2,9 @@ package socket
 
 import (
 	"fmt"
+	"os"
 	"paqet/internal/conf"
+	"paqet/internal/flog"
 	"runtime"
 
 	"github.com/gopacket/gopacket/pcap"
@@ -45,4 +47,28 @@ func newHandle(cfg *conf.Network) (*pcap.Handle, error) {
 	}
 
 	return handle, nil
+}
+
+func newWriteHandle(cfg *conf.Network) (PcapHandle, error) {
+	writerEnv := os.Getenv("RECOBA_PACKET_WRITER")
+	if writerEnv == "afpacket" {
+		w, err := newAFPacketWriter(cfg.Interface.Name)
+		if err != nil {
+			flog.Warnf("af_packet writer failed, falling back to pcap: %v", err)
+		} else {
+			flog.Infof("using AF_PACKET writer on interface %s (ifindex=%d)", cfg.Interface.Name, cfg.Interface.Index)
+			return w, nil
+		}
+	}
+
+	h, err := newHandle(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if runtime.GOOS != "windows" {
+		if err := h.SetDirection(pcap.DirectionOut); err != nil {
+			return nil, fmt.Errorf("failed to set pcap direction out: %v", err)
+		}
+	}
+	return h, nil
 }

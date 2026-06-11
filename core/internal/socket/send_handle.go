@@ -8,7 +8,6 @@ import (
 	"paqet/internal/flog"
 	"paqet/internal/pkg/hash"
 	"paqet/internal/pkg/iterator"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,7 +15,6 @@ import (
 
 	"github.com/gopacket/gopacket"
 	"github.com/gopacket/gopacket/layers"
-	"github.com/gopacket/gopacket/pcap"
 )
 
 type TCPF struct {
@@ -47,14 +45,19 @@ type SendHandle struct {
 	ipv6Pool    sync.Pool
 	tcpPool     sync.Pool
 	bufPool     sync.Pool
+	tsBufPool   sync.Pool
 	metrics     rawPacketMetrics
 }
 
 type rawPacketMetrics struct {
-	enobufsTotal uint64
-	retryTotal   uint64
-	retrySuccess uint64
-	retryFailed  uint64
+	enobufsTotal   uint64
+	retryTotal     uint64
+	retrySuccess   uint64
+	retryFailed    uint64
+	packetsWritten uint64
+	bytesWritten   uint64
+	writeErrors    uint64
+	lastLogTime    int64
 }
 
 type txPacer struct {
@@ -114,16 +117,9 @@ func (p *txPacer) wait(n int) {
 }
 
 func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
-	handle, err := newHandle(cfg)
+	handle, err := newWriteHandle(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open pcap handle: %w", err)
-	}
-
-	// SetDirection is not fully supported on Windows Npcap, so skip it
-	if runtime.GOOS != "windows" {
-		if err := handle.SetDirection(pcap.DirectionOut); err != nil {
-			return nil, fmt.Errorf("failed to set pcap direction out: %v", err)
-		}
+		return nil, fmt.Errorf("failed to open handle: %w", err)
 	}
 
 	sh := &SendHandle{
@@ -158,13 +154,19 @@ func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
 				return gopacket.NewSerializeBuffer()
 			},
 		},
+		tsBufPool: sync.Pool{
+			New: func() any {
+				b := make([]byte, 8)
+				return &b
+			},
+		},
 	}
 	if cfg.TX.Pacing.Enabled && cfg.TX.Pacing.RateMbps > 0 {
 		sh.pacer = newTXPacer(cfg.TX.Pacing.RateMbps)
 		flog.Infof("tx pacing enabled: rate_mbps=%d", cfg.TX.Pacing.RateMbps)
 	}
 	flog.Infof("tx policy: raw_packet_retries=%d raw_packet_retry_us=%d", cfg.TX.RawPacketRetries, cfg.TX.RawPacketRetryUS)
-	flog.Infof("raw_packet metrics initialized: enobufs_total=0 retry_total=0 retry_success=0 retry_failed=0")
+	flog.Infof("raw_packet metrics initialized: enobufs_total=0 retry_total=0 retry_success=0 retry_failed=0 packets=0 bytes=0")
 	if cfg.IPv4.Addr != nil {
 		sh.srcIPv4 = cfg.IPv4.Addr.IP
 		sh.srcIPv4RHWA = cfg.IPv4.Router
@@ -204,7 +206,7 @@ func (h *SendHandle) buildIPv6Header(dstIP net.IP) *layers.IPv6 {
 	return ip
 }
 
-func (h *SendHandle) buildTCPHeader(dstPort uint16, f conf.TCPF) *layers.TCP {
+func (h *SendHandle) buildTCPHeader(dstPort uint16, f conf.TCPF, tsBuf []byte) *layers.TCP {
 	tcp := h.tcpPool.Get().(*layers.TCP)
 	*tcp = layers.TCP{
 		SrcPort: layers.TCPPort(h.srcPort),
@@ -219,12 +221,12 @@ func (h *SendHandle) buildTCPHeader(dstPort uint16, f conf.TCPF) *layers.TCP {
 		tcp.Options = []layers.TCPOption{
 			{OptionType: layers.TCPOptionKindMSS, OptionLength: 4, OptionData: []byte{0x05, 0xb4}},
 			{OptionType: layers.TCPOptionKindSACKPermitted, OptionLength: 2},
-			{OptionType: layers.TCPOptionKindTimestamps, OptionLength: 10, OptionData: make([]byte, 8)},
+			{OptionType: layers.TCPOptionKindTimestamps, OptionLength: 10, OptionData: tsBuf},
 			{OptionType: layers.TCPOptionKindNop},
 			{OptionType: layers.TCPOptionKindWindowScale, OptionLength: 3, OptionData: []byte{8}},
 		}
-		binary.BigEndian.PutUint32(tcp.Options[2].OptionData[0:4], tsVal)
-		binary.BigEndian.PutUint32(tcp.Options[2].OptionData[4:8], 0)
+		binary.BigEndian.PutUint32(tsBuf[0:4], tsVal)
+		binary.BigEndian.PutUint32(tsBuf[4:8], 0)
 		tcp.Seq = 1 + (counter & 0x7)
 		tcp.Ack = 0
 		if f.ACK {
@@ -234,11 +236,11 @@ func (h *SendHandle) buildTCPHeader(dstPort uint16, f conf.TCPF) *layers.TCP {
 		tcp.Options = []layers.TCPOption{
 			{OptionType: layers.TCPOptionKindNop},
 			{OptionType: layers.TCPOptionKindNop},
-			{OptionType: layers.TCPOptionKindTimestamps, OptionLength: 10, OptionData: make([]byte, 8)},
+			{OptionType: layers.TCPOptionKindTimestamps, OptionLength: 10, OptionData: tsBuf},
 		}
 		tsEcr := tsVal - (counter%200 + 50)
-		binary.BigEndian.PutUint32(tcp.Options[2].OptionData[0:4], tsVal)
-		binary.BigEndian.PutUint32(tcp.Options[2].OptionData[4:8], tsEcr)
+		binary.BigEndian.PutUint32(tsBuf[0:4], tsVal)
+		binary.BigEndian.PutUint32(tsBuf[4:8], tsEcr)
 		seq := h.time + (counter << 7)
 		tcp.Seq = seq
 		tcp.Ack = seq - (counter & 0x3FF) + 1400
@@ -250,17 +252,20 @@ func (h *SendHandle) buildTCPHeader(dstPort uint16, f conf.TCPF) *layers.TCP {
 func (h *SendHandle) Write(payload []byte, addr *net.UDPAddr) error {
 	buf := h.bufPool.Get().(gopacket.SerializeBuffer)
 	ethLayer := h.ethPool.Get().(*layers.Ethernet)
+	tsBufPtr := h.tsBufPool.Get().(*[]byte)
+	tsBuf := *tsBufPtr
 	defer func() {
 		buf.Clear()
 		h.bufPool.Put(buf)
 		h.ethPool.Put(ethLayer)
+		h.tsBufPool.Put(tsBufPtr)
 	}()
 
 	dstIP := addr.IP
 	dstPort := uint16(addr.Port)
 
 	f := h.getClientTCPF(dstIP, dstPort)
-	tcpLayer := h.buildTCPHeader(dstPort, f)
+	tcpLayer := h.buildTCPHeader(dstPort, f, tsBuf)
 	defer h.tcpPool.Put(tcpLayer)
 
 	var ipLayer gopacket.SerializableLayer
@@ -293,7 +298,14 @@ func (h *SendHandle) writePacketData(data []byte) error {
 	}
 
 	err := h.handle.WritePacketData(data)
+	atomic.AddUint64(&h.metrics.packetsWritten, 1)
+	atomic.AddUint64(&h.metrics.bytesWritten, uint64(len(data)))
+	if err == nil {
+		h.maybeLogMetrics()
+		return nil
+	}
 	if !isENOBUFS(err) {
+		atomic.AddUint64(&h.metrics.writeErrors, 1)
 		return err
 	}
 
@@ -325,17 +337,21 @@ func (h *SendHandle) writePacketData(data []byte) error {
 		}
 
 		err = h.handle.WritePacketData(data)
+		atomic.AddUint64(&h.metrics.packetsWritten, 1)
+		atomic.AddUint64(&h.metrics.bytesWritten, uint64(len(data)))
 		if err == nil {
 			atomic.AddUint64(&h.metrics.retrySuccess, 1)
 			h.logTXMetrics("recovered ENOBUFS")
 			return nil
 		}
 		if !isENOBUFS(err) {
+			atomic.AddUint64(&h.metrics.writeErrors, 1)
 			return err
 		}
 	}
 
 	atomic.AddUint64(&h.metrics.retryFailed, 1)
+	atomic.AddUint64(&h.metrics.writeErrors, 1)
 	h.logTXMetrics("failed to recover ENOBUFS")
 	return err
 }
@@ -349,11 +365,34 @@ func isENOBUFS(err error) bool {
 }
 
 func (h *SendHandle) logTXMetrics(reason string) {
-	flog.Warnf("raw_packet metrics %s: enobufs_total=%d retry_total=%d retry_success=%d retry_failed=%d",
+	flog.Warnf("raw_packet metrics %s: enobufs=%d retry_total=%d retry_ok=%d retry_fail=%d pkt=%d bytes=%d err=%d",
 		reason,
 		atomic.LoadUint64(&h.metrics.enobufsTotal),
 		atomic.LoadUint64(&h.metrics.retryTotal),
 		atomic.LoadUint64(&h.metrics.retrySuccess),
+		atomic.LoadUint64(&h.metrics.retryFailed),
+		atomic.LoadUint64(&h.metrics.packetsWritten),
+		atomic.LoadUint64(&h.metrics.bytesWritten),
+		atomic.LoadUint64(&h.metrics.writeErrors),
+	)
+}
+
+func (h *SendHandle) maybeLogMetrics() {
+	packets := atomic.LoadUint64(&h.metrics.packetsWritten)
+	if packets == 0 || packets%10000 != 0 {
+		return
+	}
+	now := time.Now().UnixNano()
+	prev := atomic.LoadInt64(&h.metrics.lastLogTime)
+	if !atomic.CompareAndSwapInt64(&h.metrics.lastLogTime, prev, now) {
+		return
+	}
+	flog.Infof("raw_packet stats: pkt=%d bytes=%d err=%d enobufs=%d retry_total=%d retry_fail=%d",
+		packets,
+		atomic.LoadUint64(&h.metrics.bytesWritten),
+		atomic.LoadUint64(&h.metrics.writeErrors),
+		atomic.LoadUint64(&h.metrics.enobufsTotal),
+		atomic.LoadUint64(&h.metrics.retryTotal),
 		atomic.LoadUint64(&h.metrics.retryFailed),
 	)
 }
