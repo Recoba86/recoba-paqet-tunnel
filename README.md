@@ -196,6 +196,15 @@ bash scripts/build_release.sh v2.1.9
 
 The script builds canonical `recoba-paqet-tunnel-linux-amd64.tar.gz` and `recoba-paqet-tunnel-linux-arm64.tar.gz` tarballs plus `SHA256SUMS` under `build/`. The installer can still fall back to older `recoba-tunnel-linux-*.tar.gz` release assets when needed.
 
+## Documentation
+
+Detailed guides for design, operations, and troubleshooting are available under `docs/`:
+
+- [Architecture & Security Model](docs/ARCHITECTURE.md) - Details on mock-TCP `"S"` flags, kernel suppression, and systemd service ordering.
+- [Installation Guide](docs/INSTALL.md) - Step-by-step setup, client/server config examples, and exit node addition.
+- [Operations & Durability](docs/OPERATIONS.md) - Reboot durability workflows, health checking, and traffic validation.
+- [Troubleshooting & Rollback](docs/TROUBLESHOOTING.md) - Rollback procedures, log auditing, and common failure points.
+
 ## License
 
 This project is based on the open-source Paqet core. See [LICENSE](LICENSE) for details.

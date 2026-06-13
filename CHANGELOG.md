@@ -1,5 +1,13 @@
 # Changelog
 
+## [v2.1.13] - 2026-06-13
+
+### Added
+- **Systemd iptables persistence**: Automatic boot persistence of raw and mangle connection protection rules on both client and server nodes using oneshot systemd services and dependency drop-ins.
+- **S-Flag default**: Raw socket TCP flag defaults transitioned to S-only ("S") flags on both client and server configs to resolve TLS payload drops under stateful network inspection.
+- **Detailed Documentation**: Added system architecture, operations, troubleshooting, and installation guides under `docs/`.
+- **Environment Template**: Added `.env.example` file.
+
 ## [v2.1.12] - 2026-06-07
 
 ### Changed

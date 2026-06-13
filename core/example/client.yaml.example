@@ -34,8 +34,8 @@ network:
     router_mac: "aa:bb:cc:dd:ee:ff"         # CHANGE ME: Gateway/router MAC address for IPv6
 
   tcp:
-    local_flag: ["PA"]                      # Local TCP flags (Push+Ack default)
-    remote_flag: ["PA"]                     # Remote TCP flags (Push+Ack default)
+    local_flag: ["S"]                       # Local TCP flags (S-flag Recommended)
+    remote_flag: ["S"]                      # Remote TCP flags (S-flag Recommended)
 
   # PCAP settings (optional - will use defaults)
   # pcap:

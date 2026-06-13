@@ -35,9 +35,11 @@ assert_contains() {
 }
 
 tmp_dir="$(mktemp -d)"
+PAQET_DIR="$tmp_dir/opt-paqet"
+mkdir -p "$PAQET_DIR"
 cleanup() {
     rm -rf "$tmp_dir"
-    rm -f missing_bin.yaml inactive.yaml panic.yaml retry_failed.yaml enobufs.yaml conn_lost.yaml ok.yaml
+    rm -f missing_bin.yaml inactive.yaml panic.yaml retry_failed.yaml enobufs.yaml conn_lost.yaml ok.yaml /tmp/mock_config.yaml
 }
 trap cleanup EXIT
 

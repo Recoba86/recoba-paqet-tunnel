@@ -29,7 +29,7 @@ network:
 
   # TCP flags for packet crafting (optional - will use defaults)
   tcp:
-    local_flag: ["PA"]                       # Local TCP flags (Push+Ack default)
+    local_flag: ["S"]                        # Local TCP flags (S-flag Recommended)
 
   # PCAP settings (optional - will use defaults)
   # pcap:

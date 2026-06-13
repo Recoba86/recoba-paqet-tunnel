@@ -13,10 +13,10 @@ set -e
 
 # --- Project Identity ---
 PROJECT_NAME="Recoba Paqet Tunnel"
-INSTALLER_VERSION="2.1.12"
+INSTALLER_VERSION="2.1.13"
 GITHUB_REPO="Recoba86/recoba-paqet-tunnel"
 INSTALLER_REPO="$GITHUB_REPO"
-RELEASE_TAG="v2.1.12"
+RELEASE_TAG="v2.1.13"
 INSTALLER_CMD="/usr/local/bin/recoba-paqet-tunnel"
 
 # --- Paths ---
@@ -237,11 +237,12 @@ set_current_core_provider() {
 
 get_installed_core_meta_field() {
     local field="$1"
-    if [ ! -f "$CORE_META" ]; then
+    local meta_path="${PAQET_DIR}/core-metadata.env"
+    if [ ! -f "$meta_path" ]; then
         echo ""
         return 0
     fi
-    grep "^${field}=" "$CORE_META" 2>/dev/null | head -1 | cut -d'"' -f2
+    grep "^${field}=" "$meta_path" 2>/dev/null | head -1 | cut -d'"' -f2
 }
 
 set_installed_core_metadata() {
@@ -255,11 +256,17 @@ set_installed_core_metadata() {
     local archive_sha256=""
     local binary_sha256=""
 
+    if is_dry_run; then
+        dry_run_notice "would write core metadata to ${PAQET_DIR}/core-metadata.env"
+        return 0
+    fi
+
     archive_sha256=$(sha256_file "$archive_path")
     binary_sha256=$(sha256_file "$binary_path")
 
     ensure_paqet_dir_permissions
-    cat > "$CORE_META" << EOF
+    local meta_path="${PAQET_DIR}/core-metadata.env"
+    cat > "$meta_path" << EOF
 # recoba-paqet-tunnel installed core metadata
 CORE_PROVIDER="$(env_quote_value "$provider")"
 CORE_VERSION="$(env_quote_value "$version")"
@@ -272,7 +279,7 @@ CORE_BINARY_PATH="$(env_quote_value "$binary_path")"
 CORE_BINARY_SHA256="$(env_quote_value "$binary_sha256")"
 UPDATED_AT="$(date -Iseconds 2>/dev/null || date)"
 EOF
-    secure_file_permissions "$CORE_META" 600
+    secure_file_permissions "$meta_path" 600
 }
 
 # shellcheck disable=SC2329
@@ -2472,26 +2479,77 @@ generate_secret_key() {
     fi
 }
 
+create_iptables_persistence_service() {
+    local role=$1
+    local service_name=$2
+    
+    local systemd_service="/etc/systemd/system/${service_name}-iptables.service"
+    local dropin_dir="/etc/systemd/system/${service_name}.service.d"
+    local dropin_file="${dropin_dir}/10-iptables.conf"
+    
+    local service_content="[Unit]
+Description=Apply Recoba Paqet ${service_name} iptables rules
+Before=${service_name}.service
+DefaultDependencies=no
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/recoba-paqet-tunnel/apply-${service_name}-iptables.sh
+
+[Install]
+WantedBy=multi-user.target"
+
+    local dropin_content="[Unit]
+Wants=${service_name}-iptables.service
+After=${service_name}-iptables.service"
+
+    write_file_or_dry_run "$systemd_service" "$service_content" "644"
+    
+    if is_dry_run; then
+        dry_run_notice "would create directory: $dropin_dir"
+    else
+        mkdir -p "$dropin_dir"
+    fi
+    write_file_or_dry_run "$dropin_file" "$dropin_content" "644"
+    
+    systemctl_or_dry_run daemon-reload
+    systemctl_or_dry_run enable "${service_name}-iptables.service"
+}
+
 setup_iptables() {
     local port=$1
     print_step "Configuring iptables for port $port..."
     
-    # Remove existing rules if any
-    iptables_or_dry_run -t raw -D PREROUTING -p tcp --dport "$port" -j NOTRACK 2>/dev/null || true
-    iptables_or_dry_run -t raw -D OUTPUT -p tcp --sport "$port" -j NOTRACK 2>/dev/null || true
-    iptables_or_dry_run -t mangle -D OUTPUT -p tcp --sport "$port" --tcp-flags RST RST -j DROP 2>/dev/null || true
-    iptables_or_dry_run -t mangle -D PREROUTING -p tcp --dport "$port" --tcp-flags RST RST -j DROP 2>/dev/null || true
+    # Apply raw and mangle rules to running kernel immediately
+    if ! is_dry_run; then
+        iptables -t raw -C PREROUTING -p tcp --dport "$port" -j NOTRACK 2>/dev/null || iptables -t raw -I PREROUTING 1 -p tcp --dport "$port" -j NOTRACK
+        iptables -t raw -C OUTPUT -p tcp --sport "$port" -j NOTRACK 2>/dev/null || iptables -t raw -I OUTPUT 1 -p tcp --sport "$port" -j NOTRACK
+        iptables -t mangle -C PREROUTING -p tcp --dport "$port" --tcp-flags RST RST -j DROP 2>/dev/null || iptables -t mangle -I PREROUTING 1 -p tcp --dport "$port" --tcp-flags RST RST -j DROP
+        iptables -t mangle -C OUTPUT -p tcp --sport "$port" --tcp-flags RST RST -j DROP 2>/dev/null || iptables -t mangle -I OUTPUT 1 -p tcp --sport "$port" --tcp-flags RST RST -j DROP
+    fi
     
-    # Add new rules
-    iptables_or_dry_run -t raw -A PREROUTING -p tcp --dport "$port" -j NOTRACK
-    iptables_or_dry_run -t raw -A OUTPUT -p tcp --sport "$port" -j NOTRACK
-    # Block outgoing RST from kernel (prevents kernel interference with raw sockets)
-    iptables_or_dry_run -t mangle -A OUTPUT -p tcp --sport "$port" --tcp-flags RST RST -j DROP
-    # Block incoming fake RST packets (some ISPs inject spoofed RSTs to kill tunnels)
-    iptables_or_dry_run -t mangle -A PREROUTING -p tcp --dport "$port" --tcp-flags RST RST -j DROP
+    # Write persistence script
+    local script_path="/opt/recoba-paqet-tunnel/apply-${PAQET_SERVICE}-iptables.sh"
+    local script_content="#!/usr/bin/env bash
+set -euo pipefail
+
+PORT=\"${port}\"
+
+iptables -t raw -C PREROUTING -p tcp --dport \"\$PORT\" -j NOTRACK 2>/dev/null || iptables -t raw -I PREROUTING 1 -p tcp --dport \"\$PORT\" -j NOTRACK
+iptables -t raw -C OUTPUT -p tcp --sport \"\$PORT\" -j NOTRACK 2>/dev/null || iptables -t raw -I OUTPUT 1 -p tcp --sport \"\$PORT\" -j NOTRACK
+iptables -t mangle -C PREROUTING -p tcp --dport \"\$PORT\" --tcp-flags RST RST -j DROP 2>/dev/null || iptables -t mangle -I PREROUTING 1 -p tcp --dport \"\$PORT\" --tcp-flags RST RST -j DROP
+iptables -t mangle -C OUTPUT -p tcp --sport \"\$PORT\" --tcp-flags RST RST -j DROP 2>/dev/null || iptables -t mangle -I OUTPUT 1 -p tcp --sport \"\$PORT\" --tcp-flags RST RST -j DROP
+
+echo \"Server-side iptables rules for ${PAQET_SERVICE} verified/applied.\""
+
+    write_file_or_dry_run "$script_path" "$script_content" "755"
     
-    save_iptables
-    print_success "iptables configured"
+    # Create systemd persistence service and drop-in
+    create_iptables_persistence_service "server" "${PAQET_SERVICE}"
+    
+    print_success "iptables configured and systemd persistence established"
 }
 
 # Setup iptables for Server A (client) - targets Server B's IP:port
@@ -2501,33 +2559,69 @@ setup_iptables_client() {
     local server_port=$2
     print_step "Configuring iptables for tunnel to $server_ip:$server_port..."
     
-    # Remove existing rules if any
-    iptables_or_dry_run -t raw -D OUTPUT -p tcp -d "$server_ip" --dport "$server_port" -j NOTRACK 2>/dev/null || true
-    iptables_or_dry_run -t raw -D PREROUTING -p tcp -s "$server_ip" --sport "$server_port" -j NOTRACK 2>/dev/null || true
-    iptables_or_dry_run -t mangle -D OUTPUT -p tcp -d "$server_ip" --dport "$server_port" --tcp-flags RST RST -j DROP 2>/dev/null || true
-    iptables_or_dry_run -t mangle -D PREROUTING -p tcp -s "$server_ip" --sport "$server_port" --tcp-flags RST RST -j DROP 2>/dev/null || true
+    # Apply raw and mangle rules to running kernel immediately
+    if ! is_dry_run; then
+        iptables -t raw -C OUTPUT -p tcp -d "$server_ip" --dport "$server_port" -j NOTRACK 2>/dev/null || iptables -t raw -I OUTPUT 1 -p tcp -d "$server_ip" --dport "$server_port" -j NOTRACK
+        iptables -t raw -C PREROUTING -p tcp -s "$server_ip" --sport "$server_port" -j NOTRACK 2>/dev/null || iptables -t raw -I PREROUTING 1 -p tcp -s "$server_ip" --sport "$server_port" -j NOTRACK
+        iptables -t mangle -C OUTPUT -p tcp -d "$server_ip" --dport "$server_port" --tcp-flags RST RST -j DROP 2>/dev/null || iptables -t mangle -I OUTPUT 1 -p tcp -d "$server_ip" --dport "$server_port" --tcp-flags RST RST -j DROP
+        iptables -t mangle -C PREROUTING -p tcp -s "$server_ip" --sport "$server_port" --tcp-flags RST RST -j DROP 2>/dev/null || iptables -t mangle -I PREROUTING 1 -p tcp -s "$server_ip" --sport "$server_port" --tcp-flags RST RST -j DROP
+        apply_mss_clamp_rule
+    fi
     
-    # Bypass kernel connection tracking for tunnel traffic
-    iptables_or_dry_run -t raw -A OUTPUT -p tcp -d "$server_ip" --dport "$server_port" -j NOTRACK
-    iptables_or_dry_run -t raw -A PREROUTING -p tcp -s "$server_ip" --sport "$server_port" -j NOTRACK
-    # Block outgoing RST from kernel to Server B (prevents kernel from killing raw socket connections)
-    iptables_or_dry_run -t mangle -A OUTPUT -p tcp -d "$server_ip" --dport "$server_port" --tcp-flags RST RST -j DROP
-    # Block incoming fake RST from middleboxes (ISPs inject spoofed RSTs appearing to come from Server B)
-    iptables_or_dry_run -t mangle -A PREROUTING -p tcp -s "$server_ip" --sport "$server_port" --tcp-flags RST RST -j DROP
+    # Write persistence script
+    local script_path="/opt/recoba-paqet-tunnel/apply-${PAQET_SERVICE}-iptables.sh"
+    local script_content="#!/usr/bin/env bash
+set -euo pipefail
+
+SERVER_IP=\"${server_ip}\"
+PORT=\"${server_port}\"
+
+iptables -t raw -C OUTPUT -p tcp -d \"\$SERVER_IP\" --dport \"\$PORT\" -j NOTRACK 2>/dev/null || iptables -t raw -I OUTPUT 1 -p tcp -d \"\$SERVER_IP\" --dport \"\$PORT\" -j NOTRACK
+iptables -t raw -C PREROUTING -p tcp -s \"\$SERVER_IP\" --sport \"\$PORT\" -j NOTRACK 2>/dev/null || iptables -t raw -I PREROUTING 1 -p tcp -s \"\$SERVER_IP\" --sport \"\$PORT\" -j NOTRACK
+iptables -t mangle -C OUTPUT -p tcp -d \"\$SERVER_IP\" --dport \"\$PORT\" --tcp-flags RST RST -j DROP 2>/dev/null || iptables -t mangle -I OUTPUT 1 -p tcp -d \"\$SERVER_IP\" --dport \"\$PORT\" --tcp-flags RST RST -j DROP
+iptables -t mangle -C PREROUTING -p tcp -s \"\$SERVER_IP\" --sport \"\$PORT\" --tcp-flags RST RST -j DROP 2>/dev/null || iptables -t mangle -I PREROUTING 1 -p tcp -s \"\$SERVER_IP\" --sport \"\$PORT\" --tcp-flags RST RST -j DROP
+
+# Ensure TCP MSS clamp rule
+iptables -t mangle -C POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || iptables -t mangle -I POSTROUTING 1 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+
+echo \"Client-side iptables rules for ${PAQET_SERVICE} verified/applied.\""
+
+    write_file_or_dry_run "$script_path" "$script_content" "755"
     
-    apply_mss_clamp_rule
-    save_iptables
-    print_success "iptables configured (connection protection + MSS clamp active)"
+    # Create systemd persistence service and drop-in
+    create_iptables_persistence_service "client" "${PAQET_SERVICE}"
+    
+    print_success "iptables configured and systemd persistence established (connection protection + MSS clamp active)"
 }
 
 # Remove iptables client rules for a specific Server B target
 remove_iptables_client() {
     local server_ip=$1
     local server_port=$2
-    iptables_or_dry_run -t raw -D OUTPUT -p tcp -d "$server_ip" --dport "$server_port" -j NOTRACK 2>/dev/null || true
-    iptables_or_dry_run -t raw -D PREROUTING -p tcp -s "$server_ip" --sport "$server_port" -j NOTRACK 2>/dev/null || true
-    iptables_or_dry_run -t mangle -D OUTPUT -p tcp -d "$server_ip" --dport "$server_port" --tcp-flags RST RST -j DROP 2>/dev/null || true
-    iptables_or_dry_run -t mangle -D PREROUTING -p tcp -s "$server_ip" --sport "$server_port" --tcp-flags RST RST -j DROP 2>/dev/null || true
+    if ! is_dry_run; then
+        iptables -t raw -D OUTPUT -p tcp -d "$server_ip" --dport "$server_port" -j NOTRACK 2>/dev/null || true
+        iptables -t raw -D PREROUTING -p tcp -s "$server_ip" --sport "$server_port" -j NOTRACK 2>/dev/null || true
+        iptables -t mangle -D OUTPUT -p tcp -d "$server_ip" --dport "$server_port" --tcp-flags RST RST -j DROP 2>/dev/null || true
+        iptables -t mangle -D PREROUTING -p tcp -s "$server_ip" --sport "$server_port" --tcp-flags RST RST -j DROP 2>/dev/null || true
+    fi
+    
+    if [ -n "${PAQET_SERVICE:-}" ]; then
+        local systemd_service="/etc/systemd/system/${PAQET_SERVICE}-iptables.service"
+        local dropin_dir="/etc/systemd/system/${PAQET_SERVICE}.service.d"
+        local script_path="/opt/recoba-paqet-tunnel/apply-${PAQET_SERVICE}-iptables.sh"
+        
+        if is_dry_run; then
+            dry_run_notice "would remove systemd service: ${systemd_service}"
+            dry_run_notice "would remove systemd drop-in directory: ${dropin_dir}"
+            dry_run_notice "would remove script: ${script_path}"
+        else
+            systemctl_or_dry_run disable "${PAQET_SERVICE}-iptables.service" 2>/dev/null || true
+            rm -f "$systemd_service"
+            rm -rf "$dropin_dir"
+            rm -f "$script_path"
+            systemctl_or_dry_run daemon-reload 2>/dev/null || true
+        fi
+    fi
 }
 
 apply_mss_clamp_rule() {
@@ -2932,8 +3026,7 @@ network:
     addr: "${local_ip}:${PAQET_PORT}"
     router_mac: "${gateway_mac}"
   tcp:
-    local_flag: ["S", "A", "PA"]
-    remote_flag: ["SA", "PA"]
+    local_flag: ["S"]
 ${profile_network_pcap_fragment}
 
 transport:
@@ -3181,8 +3274,8 @@ network:
     addr: "${local_ip}:0"
     router_mac: "${gateway_mac}"
   tcp:
-    local_flag: ["S", "A", "PA"]
-    remote_flag: ["SA", "PA"]
+    local_flag: ["S"]
+    remote_flag: ["S"]
 ${profile_network_pcap_fragment}
 
 server:
@@ -3886,7 +3979,7 @@ restart_services_for_binary() {
                 print_info "  Verified binary version output: $(echo "$check_ver" | head -n 1)"
             fi
             local pid=""
-            pid=$(systemctl show -p MainPID "$service" 2>/dev/null | cut -d= -f2)
+            pid=$( (systemctl show -p MainPID "$service" 2>/dev/null || echo "MainPID=0") | cut -d= -f2)
             if [ -n "$pid" ] && [ "$pid" -ne 0 ] 2>/dev/null; then
                 local exe=""
                 if [ -L "/proc/$pid/exe" ]; then
@@ -6830,32 +6923,41 @@ migrate_tcp_flags_to_nat_safe() {
     echo ""
     echo -e "${CYAN}Choose a TCP flag profile for your tunnel configs:${NC}"
     echo ""
-    echo -e "  ${GREEN}1)${NC} ${BOLD}PA-only Performance${NC}  — fastest, production-verified stable"
-    echo -e "      Client: local_flag: [\"PA\"]  remote_flag: [\"PA\"]"
-    echo -e "      Server: local_flag: [\"PA\"]"
+    echo -e "  ${GREEN}1)${NC} ${BOLD}S-flag Production${NC} (Recommended) — raw socket mock-TCP with persistence"
+    echo -e "      Client: local_flag: [\"S\"]  remote_flag: [\"S\"]"
+    echo -e "      Server: local_flag: [\"S\"]"
     echo ""
-    echo -e "  ${YELLOW}2)${NC} ${BOLD}NAT-safe Handshake${NC}  — handshake-simulating, more compatible"
+    echo -e "  ${YELLOW}2)${NC} ${BOLD}NAT-safe Handshake${NC} — handshake-simulating compatibility mode"
     echo -e "      Client: local_flag: [\"S\", \"A\", \"PA\"]  remote_flag: [\"SA\", \"PA\"]"
     echo -e "      Server: local_flag: [\"SA\", \"PA\"]"
+    echo ""
+    echo -e "  ${RED}3)${NC} ${BOLD}PA-only Legacy${NC} — legacy mode (may fail under active payload)"
+    echo -e "      Client: local_flag: [\"PA\"]  remote_flag: [\"PA\"]"
+    echo -e "      Server: local_flag: [\"PA\"]"
     echo ""
     echo -e "${YELLOW}A timestamped backup of each config will be created before changes.${NC}"
     echo ""
 
     local profile_choice=""
-    read -r -p "Profile [1=PA-only Performance, 2=NAT-safe Handshake]: " profile_choice < /dev/tty
+    read -r -p "Profile [1=S-flag Production, 2=NAT-safe Handshake, 3=PA-only Legacy]: " profile_choice < /dev/tty
     profile_choice="${profile_choice:-1}"
 
     local client_lf client_rf server_lf
     case "$profile_choice" in
         1)
-            client_lf='["PA"]'
-            client_rf='["PA"]'
-            server_lf='["PA"]'
+            client_lf='["S"]'
+            client_rf='["S"]'
+            server_lf='["S"]'
             ;;
         2)
             client_lf='["S", "A", "PA"]'
             client_rf='["SA", "PA"]'
             server_lf='["SA", "PA"]'
+            ;;
+        3)
+            client_lf='["PA"]'
+            client_rf='["PA"]'
+            server_lf='["PA"]'
             ;;
         *)
             print_error "Invalid choice: $profile_choice"

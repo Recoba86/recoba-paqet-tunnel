@@ -67,8 +67,10 @@ output="$(
 
 assert_contains "$output" "DRY-RUN" "dry-run output marker"
 assert_contains "$output" "would write systemd service: /etc/systemd/system/paqet-test-codex.service" "systemd service write skipped"
-assert_contains "$output" "would run: iptables -t raw -A OUTPUT -p tcp -d 203.0.113.10 --dport 19888 -j NOTRACK" "iptables command printed"
-assert_contains "$output" "would ensure TCP MSS clamp rule" "MSS clamp is dry-run safe"
+assert_contains "$output" "would write file: /opt/recoba-paqet-tunnel/apply-paqet-test-codex-iptables.sh" "iptables script write skipped"
+assert_contains "$output" "would write file: /etc/systemd/system/paqet-test-codex-iptables.service" "iptables service write skipped"
+assert_contains "$output" "would write file: /etc/systemd/system/paqet-test-codex.service.d/10-iptables.conf" "iptables drop-in write skipped"
+assert_contains "$output" "would remove systemd service: /etc/systemd/system/paqet-test-codex-iptables.service" "iptables service removal checked"
 assert_contains "$output" "would write kernel optimization file: /etc/sysctl.d/99-paqet-test-codex.conf" "sysctl file write skipped"
 assert_contains "$output" "would write auto-reset config:" "auto-reset config write skipped"
 assert_contains "$output" "would write systemd timer: /etc/systemd/system/paqet-auto-reset-test-codex.timer" "auto-reset timer write skipped"
