@@ -4269,6 +4269,8 @@ uninstall() {
                 local s_port
                 s_port=$(echo "$server_addr" | cut -d':' -f2)
                 if [ -n "$s_ip" ] && [ -n "$s_port" ]; then
+                    local PAQET_SERVICE
+                    PAQET_SERVICE=$(get_tunnel_service "$config_file")
                     remove_iptables_client "$s_ip" "$s_port"
                 fi
             fi
@@ -8477,7 +8479,7 @@ EOF
 }
 
 discover_reset_services() {
-    local seen=""
+    local seen_services=""
     local service=""
     local unit=""
 
@@ -8489,9 +8491,9 @@ discover_reset_services() {
                 paqet*|recoba-paqet-tunnel*) ;;
                 *) continue ;;
             esac
-            if ! echo "$seen" | grep -Fxq "$service"; then
+            if ! echo "$seen_services" | grep -Fxq "$service"; then
                 echo "$service"
-                seen="${seen}
+                seen_services="${seen_services}
 ${service}"
             fi
         done < <(find "$SYSTEMD_SYSTEM_DIR" -maxdepth 1 \( -name 'paqet*.service' -o -name 'recoba-paqet-tunnel*.service' \) \( -type f -o -type l \) 2>/dev/null | sort)
@@ -8505,9 +8507,9 @@ ${service}"
                 paqet*|recoba-paqet-tunnel*) ;;
                 *) continue ;;
             esac
-            if ! echo "$seen" | grep -Fxq "$service"; then
+            if ! echo "$seen_services" | grep -Fxq "$service"; then
                 echo "$service"
-                seen="${seen}
+                seen_services="${seen_services}
 ${service}"
             fi
         done < <(systemctl list-unit-files 'paqet*.service' 'recoba-paqet-tunnel*.service' --no-legend --no-pager 2>/dev/null | awk '{print $1}' | sort)
@@ -9003,7 +9005,7 @@ if [[ "${PAQET_TEST_MODE:-0}" != "1" ]]; then
     if [ "$#" -gt 0 ]; then
         handle_cli_args "$@"
     else
-        main
+        main "$@"
     fi
 fi
 
